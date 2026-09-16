@@ -9,3 +9,27 @@ __pycache__/
 .Rproj.user/
 
 .DS_Store
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# R / RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+
+# Large generated outputs if needed
+outputs/metrics/*.tmp
+
+# Raw research data
+data/raw/*
+!data/raw/README.md
