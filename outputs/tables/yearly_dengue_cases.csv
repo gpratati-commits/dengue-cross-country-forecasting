@@ -1,0 +1,69 @@
+setting,source_year,reported_cases,observed_weeks
+Brazil,2016,2220482.0,52
+Brazil,2017,505239.0,52
+Brazil,2018,470269.0,52
+Brazil,2019,2253883.0,52
+Brazil,2020,,0
+Brazil,2021,2440285.0,52
+Brazil,2022,2363490.0,52
+Brazil,2023,3064739.0,52
+Colombia,2016,101016.0,52
+Colombia,2017,25284.0,52
+Colombia,2018,46037.0,52
+Colombia,2019,,0
+Colombia,2020,,0
+Colombia,2021,53334.0,52
+Colombia,2022,69497.0,52
+Colombia,2023,131784.0,52
+Mexico,2016,130069.0,52
+Mexico,2017,89893.0,52
+Mexico,2018,78642.0,52
+Mexico,2019,268494.0,52
+Mexico,2020,,0
+Mexico,2021,36742.0,52
+Mexico,2022,59918.0,52
+Mexico,2023,277963.0,52
+Peru,2016,31868.0,52
+Peru,2017,76093.0,52
+Peru,2018,6935.0,52
+Peru,2019,17622.0,52
+Peru,2020,,0
+Peru,2021,49274.0,52
+Peru,2022,72851.0,52
+Peru,2023,274227.0,52
+Philippines,2016,211780.0,52
+Philippines,2017,151919.0,52
+Philippines,2018,250783.0,52
+Philippines,2019,447239.0,52
+Philippines,2020,91041.0,52
+Philippines,2021,,0
+Philippines,2022,220020.0,50
+Philippines,2023,71474.0,47
+Singapore,2016,13136.0,52
+Singapore,2017,2772.0,52
+Singapore,2018,3285.0,52
+Singapore,2019,15998.0,52
+Singapore,2020,35121.0,52
+Singapore,2021,5253.0,52
+Singapore,2022,32194.0,52
+Singapore,2023,9949.0,52
+Singapore,2024,13651.0,52
+Singapore,2025,3998.0,52
+Sri Lanka,2016,34355.0,52
+Sri Lanka,2017,174687.0,52
+Sri Lanka,2018,51321.0,52
+Sri Lanka,2019,94780.0,52
+Sri Lanka,2020,32222.0,52
+Sri Lanka,2021,19441.0,52
+Sri Lanka,2022,31674.0,52
+Sri Lanka,2023,70918.0,51
+Sri Lanka,2024,53546.0,52
+Taiwan,2016,698.0,52
+Taiwan,2017,10.0,52
+Taiwan,2018,183.0,52
+Taiwan,2019,283.0,52
+Taiwan,2020,173.0,52
+Taiwan,2021,0.0,52
+Taiwan,2022,20.0,52
+Taiwan,2023,26329.0,52
+Taiwan,2024,269.0,52
