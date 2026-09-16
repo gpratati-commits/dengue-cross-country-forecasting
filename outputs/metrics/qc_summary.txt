@@ -1,0 +1,182 @@
+Dataset found.
+
+Dataset shape:
+(3216, 15)
+
+Column names:
+['SETTING', 'YR', 'WN', 'DC_OPENDENGUE', 'RF_NASA', 'RF_ERA5-Land', 'Temp_ERA5-Land', 'SH_ERA5-Land', 'Temp_MERRA2', 'TempMax_MERRA2', 'TempMin_MERRA2', 'SH_MERRA2', 'FLAG_SINGLE_CELL_RF', 'FLAG_TERMINAL_GAP', 'FLAG_MERRA2_SH_LOW_COVERAGE']
+
+First five rows:
+  SETTING    YR  ...  FLAG_TERMINAL_GAP  FLAG_MERRA2_SH_LOW_COVERAGE
+0  BRAZIL  2016  ...                  0                          0.0
+1  BRAZIL  2016  ...                  0                          0.0
+2  BRAZIL  2016  ...                  0                          0.0
+3  BRAZIL  2016  ...                  0                          0.0
+4  BRAZIL  2016  ...                  0                          0.0
+
+[5 rows x 15 columns]
+
+Data types:
+SETTING                            str
+YR                               int64
+WN                               int64
+DC_OPENDENGUE                    int64
+RF_NASA                        float64
+RF_ERA5-Land                   float64
+Temp_ERA5-Land                 float64
+SH_ERA5-Land                   float64
+Temp_MERRA2                    float64
+TempMax_MERRA2                 float64
+TempMin_MERRA2                 float64
+SH_MERRA2                      float64
+FLAG_SINGLE_CELL_RF              int64
+FLAG_TERMINAL_GAP                int64
+FLAG_MERRA2_SH_LOW_COVERAGE    float64
+dtype: object
+
+Missing values:
+SETTING                          0
+YR                               0
+WN                               0
+DC_OPENDENGUE                    0
+RF_NASA                          0
+RF_ERA5-Land                     0
+Temp_ERA5-Land                   0
+SH_ERA5-Land                     0
+Temp_MERRA2                      0
+TempMax_MERRA2                   0
+TempMin_MERRA2                   0
+SH_MERRA2                      209
+FLAG_SINGLE_CELL_RF              0
+FLAG_TERMINAL_GAP                0
+FLAG_MERRA2_SH_LOW_COVERAGE    209
+dtype: int64
+
+============================================================
+DENGUE DATA QUALITY CONTROL SUMMARY
+============================================================
+
+1. Number of records: 3,216
+
+2. Number of settings: 8
+Settings:
+   - BRAZIL
+   - COLOMBIA
+   - MEXICO
+   - PERU
+   - PHILIPPINES
+   - SINGAPORE
+   - SRI LANKA
+   - TAIWAN
+
+3. Duplicate setting-year-week records: 0
+
+4. Negative dengue case counts: 0
+
+5. Missing dengue observations: 0
+
+6. Missing climate observations:
+SH_MERRA2         209
+RF_NASA             0
+RF_ERA5-Land        0
+Temp_ERA5-Land      0
+SH_ERA5-Land        0
+Temp_MERRA2         0
+TempMax_MERRA2      0
+TempMin_MERRA2      0
+dtype: int64
+
+7. Year coverage by setting:
+             first_year  last_year  observed_years
+SETTING                                           
+BRAZIL             2016       2023               7
+COLOMBIA           2016       2023               6
+MEXICO             2016       2023               7
+PERU               2016       2023               7
+PHILIPPINES        2016       2023               7
+SINGAPORE          2016       2025              10
+SRI LANKA          2016       2024               9
+TAIWAN             2016       2024               9
+
+8. Missing years within each setting:
+   BRAZIL: [2020]
+   COLOMBIA: [2019, 2020]
+   MEXICO: [2020]
+   PERU: [2020]
+   PHILIPPINES: [2021]
+   SINGAPORE: None
+   SRI LANKA: None
+   TAIWAN: None
+
+9. Week coverage:
+    SETTING   YR  first_week  last_week  observed_weeks
+     BRAZIL 2016           1         52              52
+     BRAZIL 2017           1         52              52
+     BRAZIL 2018           1         52              52
+     BRAZIL 2019           1         52              52
+     BRAZIL 2021           1         52              52
+     BRAZIL 2022           1         52              52
+     BRAZIL 2023           1         52              52
+   COLOMBIA 2016           1         52              52
+   COLOMBIA 2017           1         52              52
+   COLOMBIA 2018           1         52              52
+   COLOMBIA 2021           1         52              52
+   COLOMBIA 2022           1         52              52
+   COLOMBIA 2023           1         52              52
+     MEXICO 2016           1         52              52
+     MEXICO 2017           1         52              52
+     MEXICO 2018           1         52              52
+     MEXICO 2019           1         52              52
+     MEXICO 2021           1         52              52
+     MEXICO 2022           1         52              52
+     MEXICO 2023           1         52              52
+       PERU 2016           1         52              52
+       PERU 2017           1         52              52
+       PERU 2018           1         52              52
+       PERU 2019           1         52              52
+       PERU 2021           1         52              52
+       PERU 2022           1         52              52
+       PERU 2023           1         52              52
+PHILIPPINES 2016           1         52              52
+PHILIPPINES 2017           1         52              52
+PHILIPPINES 2018           1         52              52
+PHILIPPINES 2019           1         52              52
+PHILIPPINES 2020           1         52              52
+PHILIPPINES 2022           1         50              50
+PHILIPPINES 2023           1         52              47
+  SINGAPORE 2016           1         52              52
+  SINGAPORE 2017           1         52              52
+  SINGAPORE 2018           1         52              52
+  SINGAPORE 2019           1         52              52
+  SINGAPORE 2020           1         52              52
+  SINGAPORE 2021           1         52              52
+  SINGAPORE 2022           1         52              52
+  SINGAPORE 2023           1         52              52
+  SINGAPORE 2024           1         52              52
+  SINGAPORE 2025           1         52              52
+  SRI LANKA 2016           1         52              52
+  SRI LANKA 2017           1         52              52
+  SRI LANKA 2018           1         52              52
+  SRI LANKA 2019           1         52              52
+  SRI LANKA 2020           1         52              52
+  SRI LANKA 2021           1         52              52
+  SRI LANKA 2022           1         52              52
+  SRI LANKA 2023           1         51              51
+  SRI LANKA 2024           1         52              52
+     TAIWAN 2016           1         52              52
+     TAIWAN 2017           1         52              52
+     TAIWAN 2018           1         52              52
+     TAIWAN 2019           1         52              52
+     TAIWAN 2020           1         52              52
+     TAIWAN 2021           1         52              52
+     TAIWAN 2022           1         52              52
+     TAIWAN 2023           1         52              52
+     TAIWAN 2024           1         52              52
+
+10. Internal structural gaps:
+   PHILIPPINES, 2023: [46, 47, 48, 49, 50]
+
+============================================================
+QC COMPLETE
+Tables saved in outputs/tables/
+============================================================
