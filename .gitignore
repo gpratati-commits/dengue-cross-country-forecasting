@@ -29,7 +29,9 @@ __pycache__/
 
 # Large generated outputs if needed
 outputs/metrics/*.tmp
-
 # Raw research data
 data/raw/*
 !data/raw/README.md
+# Generated processed data
+data/processed/*
+!data/processed/README.md
