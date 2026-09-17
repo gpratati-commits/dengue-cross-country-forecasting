@@ -1,0 +1,7 @@
+horizon_weeks,model,median_mase,median_percent_improvement,settings_beating_persistence,settings_evaluated
+1,climate_informed,1.00683004708237,-11.48552298855895,1,7
+1,epidemiology_only,0.646031230198172,-8.446269625529261,1,7
+2,climate_informed,1.014419409097875,2.3787710385689538,3,6
+2,epidemiology_only,0.994019504193478,-6.231520039240457,1,7
+4,climate_informed,1.703287929794005,11.230795018670268,4,6
+4,epidemiology_only,1.763812811714105,-11.34345358249886,2,6
