@@ -1,0 +1,25 @@
+setting,horizon_weeks,validation_year,test_year,forecast_pairs,cross_year_pairs,train_to_validation_leak,validation_to_test_leak
+Brazil,1,2022,2023,363,6,1,1
+Brazil,2,2022,2023,362,12,2,2
+Brazil,4,2022,2023,360,24,4,4
+Colombia,1,2022,2023,311,5,1,1
+Colombia,2,2022,2023,310,10,2,2
+Colombia,4,2022,2023,308,20,4,4
+Mexico,1,2022,2023,363,6,1,1
+Mexico,2,2022,2023,362,12,2,2
+Mexico,4,2022,2023,360,24,4,4
+Peru,1,2022,2023,363,6,1,1
+Peru,2,2022,2023,362,12,2,2
+Peru,4,2022,2023,360,24,4,4
+Philippines,1,2022,2023,356,6,1,1
+Philippines,2,2022,2023,355,12,2,2
+Philippines,4,2022,2023,353,24,4,4
+Singapore,1,2024,2025,519,9,1,1
+Singapore,2,2024,2025,518,18,2,2
+Singapore,4,2024,2025,516,36,4,4
+Sri Lanka,1,2023,2024,466,8,1,1
+Sri Lanka,2,2023,2024,465,16,2,2
+Sri Lanka,4,2023,2024,463,32,4,4
+Taiwan,1,2023,2024,467,8,1,1
+Taiwan,2,2023,2024,466,16,2,2
+Taiwan,4,2023,2024,464,32,4,4
