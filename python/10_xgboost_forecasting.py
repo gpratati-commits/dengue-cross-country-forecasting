@@ -1,22 +1,33 @@
 """
-Temporally validated multi-horizon dengue forecasting with XGBoost.
+Leakage-safe multi-horizon dengue forecasting with XGBoost.
 
-Two XGBoost models are evaluated:
-
+Models
+------
 1. xgboost_epidemiology
    Dengue-history + seasonal predictors.
 
 2. xgboost_climate
    Dengue-history + seasonal predictors + climate predictors.
 
-Temporal evaluation:
-- Training = years before validation year
-- Validation = penultimate observed year
-- Test = latest observed year
+Horizons
+--------
+1, 2 and 4 weeks ahead.
 
-The validation year selects the number of boosting rounds using
-early stopping. The model is then refitted using training +
-validation data and evaluated on the held-out test year.
+Leakage protection
+------------------
+Train/validation/test membership is determined by the YEAR OF THE
+FORECAST TARGET, not the year of the forecast origin.
+
+Therefore, a forecast made late in one calendar year for an outcome
+in the next calendar year is assigned to the correct target period.
+
+Outputs
+-------
+- outputs/tables/xgboost_forecasting_results.csv
+- outputs/tables/xgboost_forecasting_summary.csv
+- outputs/tables/xgboost_climate_ablation.csv
+- outputs/tables/xgboost_climate_ablation_summary.csv
+- outputs/predictions/xgboost_predictions.csv
 """
 
 from pathlib import Path
@@ -43,23 +54,11 @@ PREDICTION_DIR = Path(
     "outputs/predictions"
 )
 
-TABLE_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-PREDICTION_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-
 HORIZONS = [
     1,
     2,
     4,
 ]
-
 
 SEED = 42
 
@@ -68,7 +67,6 @@ MIN_VALIDATION_ROWS = 20
 MIN_TEST_ROWS = 20
 
 MAX_BOOST_ROUNDS = 2000
-
 EARLY_STOPPING_ROUNDS = 100
 
 
@@ -85,6 +83,17 @@ XGB_PARAMS = {
     "seed": SEED,
     "tree_method": "hist",
 }
+
+
+TABLE_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+PREDICTION_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 # ============================================================
@@ -221,12 +230,14 @@ def mase_scale(
         training.loc[
             valid,
             "cases"
-        ].to_numpy(
+        ]
+        .to_numpy(
             dtype=float
         )
         - previous_cases.loc[
             valid
-        ].to_numpy(
+        ]
+        .to_numpy(
             dtype=float
         )
     )
@@ -252,19 +263,19 @@ def mase_scale(
 
 
 # ============================================================
-# FEATURE ENGINEERING
+# EPIDEMIOLOGICAL FEATURES
 # ============================================================
 
-def add_safe_features(
+def add_safe_epidemiological_features(
     data
 ):
     """
-    Create leakage-safe epidemiological predictors.
+    Create predictors using information available at
+    the forecast origin.
     """
 
     data = (
         data
-        .copy()
         .sort_values(
             [
                 "setting",
@@ -274,54 +285,50 @@ def add_safe_features(
         .reset_index(
             drop=True
         )
+        .copy()
     )
 
-    if (
+    data[
         "log_cases"
-        not in data.columns
-    ):
-
+    ] = np.log1p(
         data[
-            "log_cases"
-        ] = np.log1p(
-            data[
-                "cases"
-            ].clip(
-                lower=0
-            )
+            "cases"
+        ].clip(
+            lower=0
         )
+    )
 
-    if (
+    data[
         "season_sin"
-        not in data.columns
-    ):
+    ] = np.sin(
+        2.0
+        * math.pi
+        * data[
+            "source_week"
+        ]
+        / 52.0
+    )
 
-        data[
-            "season_sin"
-        ] = np.sin(
-            2.0
-            * math.pi
-            * data[
-                "source_week"
-            ]
-            / 52.0
-        )
-
-    if (
+    data[
         "season_cos"
-        not in data.columns
-    ):
+    ] = np.cos(
+        2.0
+        * math.pi
+        * data[
+            "source_week"
+        ]
+        / 52.0
+    )
 
-        data[
-            "season_cos"
-        ] = np.cos(
-            2.0
-            * math.pi
-            * data[
-                "source_week"
-            ]
-            / 52.0
-        )
+    grouped_log_cases = (
+        data
+        .groupby(
+            "setting",
+            sort=False
+        )[
+            "log_cases"
+        ]
+    )
 
     for lag in [
         1,
@@ -330,66 +337,39 @@ def add_safe_features(
         8,
     ]:
 
-        column = (
+        data[
             f"log_cases_lag_{lag}"
+        ] = grouped_log_cases.shift(
+            lag
         )
-
-        if (
-            column
-            not in data.columns
-        ):
-
-            data[
-                column
-            ] = (
-                data
-                .groupby(
-                    "setting",
-                    sort=False
-                )[
-                    "log_cases"
-                ]
-                .shift(
-                    lag
-                )
-            )
 
     for window in [
         4,
         8,
     ]:
 
-        column = (
+        data[
             f"log_cases_roll_mean_{window}"
-        )
-
-        if (
-            column
-            not in data.columns
-        ):
-
-            data[
-                column
-            ] = (
-                data
-                .groupby(
-                    "setting",
-                    sort=False
-                )[
-                    "log_cases"
-                ]
-                .transform(
-                    lambda series: (
-                        series
-                        .shift(1)
-                        .rolling(
-                            window=window,
-                            min_periods=window
-                        )
-                        .mean()
+        ] = (
+            data
+            .groupby(
+                "setting",
+                sort=False
+            )[
+                "log_cases"
+            ]
+            .transform(
+                lambda series: (
+                    series
+                    .shift(1)
+                    .rolling(
+                        window=window,
+                        min_periods=window
                     )
+                    .mean()
                 )
             )
+        )
 
     return data
 
@@ -402,7 +382,8 @@ def choose_climate_columns(
     data
 ):
     """
-    Detect rainfall, temperature and humidity columns.
+    Automatically detect rainfall, temperature,
+    and humidity columns.
     """
 
     columns = set(
@@ -456,25 +437,22 @@ def choose_climate_columns(
             humidity,
     }
 
-    climate = {
+    return {
         name: column
         for (
             name,
             column
-        )
-        in climate.items()
+        ) in climate.items()
         if column is not None
     }
 
-    return climate
 
-
-def add_climate_lags(
+def add_climate_features(
     data,
     climate_columns
 ):
     """
-    Create current-source-week and lagged climate predictors.
+    Create current-origin and lagged climate predictors.
     """
 
     data = data.copy()
@@ -485,6 +463,15 @@ def add_climate_lags(
         climate_name,
         source_column
     ) in climate_columns.items():
+
+        data[
+            source_column
+        ] = pd.to_numeric(
+            data[
+                source_column
+            ],
+            errors="coerce"
+        )
 
         current_column = (
             f"climate_{climate_name}_lag_0"
@@ -541,40 +528,112 @@ def add_climate_lags(
 # FORECAST TARGETS
 # ============================================================
 
-def add_targets_if_needed(
+def add_targets(
     data
 ):
     """
-    Create future case targets only when they do not already exist.
+    Create future outcomes and true target-time metadata.
+
+    The continuity check ensures that row-based shifting
+    represents an actual h-week forecast.
     """
 
     data = data.copy()
 
     for horizon in HORIZONS:
 
-        target = (
+        grouped = data.groupby(
+            "setting",
+            sort=False
+        )
+
+        target_cases = (
             f"target_cases_h{horizon}"
         )
 
-        if (
-            target
-            not in data.columns
-        ):
+        target_year = (
+            f"target_year_h{horizon}"
+        )
 
-            data[
-                target
-            ] = (
-                data
-                .groupby(
-                    "setting",
-                    sort=False
-                )[
-                    "cases"
-                ]
-                .shift(
-                    -horizon
-                )
+        target_week = (
+            f"target_week_h{horizon}"
+        )
+
+        target_analysis_week = (
+            f"target_analysis_week_h{horizon}"
+        )
+
+        data[
+            target_cases
+        ] = (
+            grouped[
+                "cases"
+            ]
+            .shift(
+                -horizon
             )
+        )
+
+        data[
+            target_year
+        ] = (
+            grouped[
+                "source_year"
+            ]
+            .shift(
+                -horizon
+            )
+        )
+
+        data[
+            target_week
+        ] = (
+            grouped[
+                "source_week"
+            ]
+            .shift(
+                -horizon
+            )
+        )
+
+        data[
+            target_analysis_week
+        ] = (
+            grouped[
+                "analysis_week"
+            ]
+            .shift(
+                -horizon
+            )
+        )
+
+        expected_target_week = (
+            data[
+                "analysis_week"
+            ]
+            + horizon
+        )
+
+        continuous = (
+            data[
+                target_analysis_week
+            ]
+            .eq(
+                expected_target_week
+            )
+        )
+
+        for column in [
+            target_cases,
+            target_year,
+            target_week,
+            target_analysis_week,
+        ]:
+
+            data.loc[
+                ~continuous,
+                column
+            ] = np.nan
 
     return data
 
@@ -590,9 +649,10 @@ def train_xgboost(
     target
 ):
     """
-    Select boosting rounds using validation data.
+    Select boosting rounds using the validation
+    target year.
 
-    Then refit on training + validation data.
+    Then refit using training + validation data.
     """
 
     dtrain = xgb.DMatrix(
@@ -639,23 +699,25 @@ def train_xgboost(
         verbose_eval=False,
     )
 
-    if hasattr(
+    best_iteration = getattr(
         preliminary_model,
-        "best_iteration"
-    ):
+        "best_iteration",
+        None
+    )
+
+    if best_iteration is None:
 
         best_rounds = (
-            int(
-                preliminary_model
-                .best_iteration
-            )
-            + 1
+            MAX_BOOST_ROUNDS
         )
 
     else:
 
         best_rounds = (
-            MAX_BOOST_ROUNDS
+            int(
+                best_iteration
+            )
+            + 1
         )
 
     best_rounds = max(
@@ -708,7 +770,8 @@ def predict_cases(
     features
 ):
     """
-    Generate case-count predictions.
+    Generate non-negative predictions on
+    the original case-count scale.
     """
 
     dtest = xgb.DMatrix(
@@ -744,8 +807,8 @@ def predict_cases(
 if not DATA_FILE.exists():
 
     raise FileNotFoundError(
-        "Processed feature file "
-        f"not found: {DATA_FILE}"
+        "Processed feature file not found: "
+        f"{DATA_FILE}"
     )
 
 
@@ -763,7 +826,7 @@ print(
 # REQUIRED COLUMNS
 # ============================================================
 
-required = {
+required_columns = {
     "setting",
     "source_year",
     "source_week",
@@ -772,7 +835,7 @@ required = {
 
 
 missing_required = sorted(
-    required
+    required_columns
     - set(
         data.columns
     )
@@ -790,37 +853,23 @@ if missing_required:
 
 
 # ============================================================
-# STANDARDISE CORE VARIABLES
+# CLEAN CORE VARIABLES
 # ============================================================
 
-data[
-    "source_year"
-] = pd.to_numeric(
+for column in [
+    "source_year",
+    "source_week",
+    "cases",
+]:
+
     data[
-        "source_year"
-    ],
-    errors="coerce"
-)
-
-
-data[
-    "source_week"
-] = pd.to_numeric(
-    data[
-        "source_week"
-    ],
-    errors="coerce"
-)
-
-
-data[
-    "cases"
-] = pd.to_numeric(
-    data[
-        "cases"
-    ],
-    errors="coerce"
-)
+        column
+    ] = pd.to_numeric(
+        data[
+            column
+        ],
+        errors="coerce"
+    )
 
 
 data = data.dropna(
@@ -849,6 +898,21 @@ data[
         "source_week"
     ]
     .astype(int)
+)
+
+
+data = (
+    data
+    .sort_values(
+        [
+            "setting",
+            "source_year",
+            "source_week",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
 )
 
 
@@ -885,18 +949,6 @@ if (
     "analysis_week"
     not in data.columns
 ):
-
-    data = (
-        data
-        .sort_values(
-            [
-                "setting",
-                "source_year",
-                "source_week",
-            ]
-        )
-        .copy()
-    )
 
     data[
         "analysis_week"
@@ -938,20 +990,49 @@ data[
 )
 
 
-# ============================================================
-# BUILD FEATURES
-# ============================================================
-
-data = add_safe_features(
+data = (
     data
+    .sort_values(
+        [
+            "setting",
+            "analysis_week",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
 )
 
+
+# ============================================================
+# BUILD EPIDEMIOLOGICAL FEATURES
+# ============================================================
+
+data = (
+    add_safe_epidemiological_features(
+        data
+    )
+)
+
+
+# ============================================================
+# BUILD CLIMATE FEATURES
+# ============================================================
 
 climate_columns = (
     choose_climate_columns(
         data
     )
 )
+
+
+if not climate_columns:
+
+    raise RuntimeError(
+        "No climate predictors were detected. "
+        "Check the climate column names in "
+        "data/processed/dengue_model_features.csv."
+    )
 
 
 if (
@@ -976,19 +1057,23 @@ if (
 (
     data,
     climate_features
-) = add_climate_lags(
+) = add_climate_features(
     data,
     climate_columns
 )
 
 
-data = add_targets_if_needed(
+# ============================================================
+# BUILD LEAKAGE-SAFE TARGETS
+# ============================================================
+
+data = add_targets(
     data
 )
 
 
 # ============================================================
-# EPIDEMIOLOGICAL FEATURES
+# MODEL FEATURE SETS
 # ============================================================
 
 epi_features = [
@@ -1006,53 +1091,26 @@ epi_features = [
 
 epi_features = [
     column
-    for column
-    in epi_features
+    for column in epi_features
     if column
     in data.columns
 ]
 
 
-if (
-    len(
-        epi_features
-    )
-    == 0
-):
+if not epi_features:
 
     raise RuntimeError(
-        "No epidemiological "
-        "XGBoost features "
-        "could be constructed."
+        "No epidemiological XGBoost "
+        "features could be constructed."
     )
-
-
-climate_model_features = (
-    epi_features
-    + climate_features
-)
 
 
 climate_model_features = list(
     dict.fromkeys(
-        climate_model_features
+        epi_features
+        + climate_features
     )
 )
-
-
-if (
-    len(
-        climate_features
-    )
-    == 0
-):
-
-    raise RuntimeError(
-        "No climate predictors were detected. "
-        "Check the climate column names in "
-        "data/processed/"
-        "dengue_model_features.csv."
-    )
 
 
 print(
@@ -1062,13 +1120,19 @@ print(
 
 
 print(
-    "\nClimate features:",
+    "\nClimate source columns:",
+    climate_columns
+)
+
+
+print(
+    "\nClimate model features:",
     climate_features
 )
 
 
 # ============================================================
-# MODEL STORAGE
+# RESULT STORAGE
 # ============================================================
 
 results = []
@@ -1086,7 +1150,7 @@ settings = sorted(
 
 
 # ============================================================
-# MODEL LOOP
+# TEMPORALLY VALIDATED MODEL LOOP
 # ============================================================
 
 for setting in settings:
@@ -1104,6 +1168,7 @@ for setting in settings:
         .copy()
     )
 
+
     observed_years = sorted(
         group.loc[
             group[
@@ -1116,6 +1181,7 @@ for setting in settings:
         .unique()
     )
 
+
     if (
         len(
             observed_years
@@ -1125,11 +1191,11 @@ for setting in settings:
 
         print(
             f"\nSkipping {setting}: "
-            "fewer than three "
-            "observed years."
+            "fewer than three observed years."
         )
 
         continue
+
 
     validation_year = (
         observed_years[
@@ -1137,73 +1203,134 @@ for setting in settings:
         ]
     )
 
+
     test_year = (
         observed_years[
             -1
         ]
     )
 
+
     print(
         f"\n{setting}: "
-        f"validation={validation_year}, "
-        f"test={test_year}"
+        f"validation target year="
+        f"{validation_year}, "
+        f"test target year="
+        f"{test_year}"
     )
+
+
+    # --------------------------------------------------------
+    # MASE SCALE
+    #
+    # Use observed dengue history before the test target year.
+    # --------------------------------------------------------
+
+    scale_training = (
+        group.loc[
+            group[
+                "source_year"
+            ]
+            < test_year
+        ]
+        .copy()
+    )
+
+
+    scale = mase_scale(
+        scale_training
+    )
+
 
     for horizon in HORIZONS:
 
-        target = (
+        target_cases_col = (
             f"target_cases_h{horizon}"
         )
 
-        if (
-            target
-            not in group.columns
-        ):
+        target_year_col = (
+            f"target_year_h{horizon}"
+        )
 
-            print(
-                f"Skipping {setting}, "
-                f"horizon={horizon}: "
-                f"{target} is missing."
-            )
+        target_week_col = (
+            f"target_week_h{horizon}"
+        )
 
-            continue
+        target_analysis_week_col = (
+            f"target_analysis_week_h{horizon}"
+        )
 
 
         # ----------------------------------------------------
-        # COMMON COMPLETE-DATA COHORT
+        # USE A COMMON COMPLETE-DATA COHORT
+        #
+        # Both XGBoost variants therefore use identical rows.
         # ----------------------------------------------------
 
         common_required = list(
             dict.fromkeys(
                 climate_model_features
                 + [
-                    target
+                    target_cases_col,
+                    target_year_col,
+                    target_week_col,
+                    target_analysis_week_col,
                 ]
             )
         )
 
-        complete_mask = (
-            group[
-                common_required
-            ]
-            .notna()
-            .all(
-                axis=1
-            )
-        )
 
         complete = (
             group.loc[
-                complete_mask
+                group[
+                    common_required
+                ]
+                .notna()
+                .all(
+                    axis=1
+                )
             ]
             .copy()
         )
 
 
+        complete[
+            climate_model_features
+        ] = (
+            complete[
+                climate_model_features
+            ]
+            .replace(
+                [
+                    np.inf,
+                    -np.inf,
+                ],
+                np.nan
+            )
+        )
+
+
+        complete = (
+            complete
+            .dropna(
+                subset=
+                    climate_model_features
+            )
+            .copy()
+        )
+
+
+        # ====================================================
+        # LEAKAGE-SAFE TEMPORAL SPLIT
+        #
+        # IMPORTANT:
+        # SPLIT ON TARGET YEAR, NOT SOURCE YEAR.
+        # ====================================================
+
         train_data = (
             complete.loc[
                 complete[
-                    "source_year"
+                    target_year_col
                 ]
                 < validation_year
             ]
@@ -1214,7 +1341,7 @@ for setting in settings:
         validation_data = (
             complete.loc[
                 complete[
-                    "source_year"
+                    target_year_col
                 ]
                 == validation_year
             ]
@@ -1225,7 +1352,7 @@ for setting in settings:
         test_data = (
             complete.loc[
                 complete[
-                    "source_year"
+                    target_year_col
                 ]
                 == test_year
             ]
@@ -1251,7 +1378,8 @@ for setting in settings:
             print(
                 f"Skipping {setting}, "
                 f"horizon={horizon}: "
-                "insufficient complete data "
+                "insufficient complete "
+                "leakage-safe data "
                 f"(train={len(train_data)}, "
                 f"validation="
                 f"{len(validation_data)}, "
@@ -1262,22 +1390,49 @@ for setting in settings:
 
 
         # ----------------------------------------------------
-        # MASE SCALE
+        # DEFENSIVE LEAKAGE CHECKS
         # ----------------------------------------------------
 
-        scale_training = (
-            group.loc[
-                group[
-                    "source_year"
-                ]
-                < validation_year
+        if not (
+            train_data[
+                target_year_col
             ]
-            .copy()
-        )
+            < validation_year
+        ).all():
 
-        scale = mase_scale(
-            scale_training
-        )
+            raise RuntimeError(
+                f"Training leakage detected "
+                f"for {setting}, "
+                f"horizon={horizon}."
+            )
+
+
+        if not (
+            validation_data[
+                target_year_col
+            ]
+            == validation_year
+        ).all():
+
+            raise RuntimeError(
+                f"Validation-period leakage "
+                f"detected for {setting}, "
+                f"horizon={horizon}."
+            )
+
+
+        if not (
+            test_data[
+                target_year_col
+            ]
+            == test_year
+        ).all():
+
+            raise RuntimeError(
+                f"Test-period leakage detected "
+                f"for {setting}, "
+                f"horizon={horizon}."
+            )
 
 
         # ----------------------------------------------------
@@ -1298,6 +1453,7 @@ for setting in settings:
             features
         ) in models.items():
 
+
             (
                 model,
                 best_rounds
@@ -1312,7 +1468,7 @@ for setting in settings:
                     features,
 
                 target=
-                    target,
+                    target_cases_col,
             )
 
 
@@ -1332,7 +1488,7 @@ for setting in settings:
 
             actual_eval = (
                 test_data[
-                    target
+                    target_cases_col
                 ]
                 .to_numpy(
                     dtype=float
@@ -1350,9 +1506,7 @@ for setting in settings:
             )
 
 
-            if (
-                not valid_prediction.any()
-            ):
+            if not valid_prediction.any():
 
                 print(
                     f"Skipping {setting}, "
@@ -1390,7 +1544,7 @@ for setting in settings:
 
 
             # ------------------------------------------------
-            # METRICS
+            # PERFORMANCE METRICS
             # ------------------------------------------------
 
             model_mae = mae(
@@ -1476,68 +1630,78 @@ for setting in settings:
 
 
             # ------------------------------------------------
-            # STORE INDIVIDUAL PREDICTIONS
+            # STORE PREDICTION-LEVEL RESULT
             # ------------------------------------------------
 
-            prediction_detail = (
-                pd.DataFrame(
-                    {
-                        "setting":
-                            setting,
+            prediction_detail = pd.DataFrame(
+                {
+                    "setting":
+                        setting,
 
-                        "validation_year":
-                            validation_year,
+                    "validation_year":
+                        validation_year,
 
-                        "test_year":
-                            test_year,
+                    "test_year":
+                        test_year,
 
-                        "source_year":
-                            evaluation_rows[
-                                "source_year"
-                            ]
-                            .to_numpy(),
+                    "source_year":
+                        evaluation_rows[
+                            "source_year"
+                        ]
+                        .to_numpy(),
 
-                        "source_week":
-                            evaluation_rows[
-                                "source_week"
-                            ]
-                            .to_numpy(),
+                    "source_week":
+                        evaluation_rows[
+                            "source_week"
+                        ]
+                        .to_numpy(),
 
-                        "week_label":
-                            evaluation_rows[
-                                "week_label"
-                            ]
-                            .astype(str)
-                            .to_numpy(),
+                    "week_label":
+                        evaluation_rows[
+                            "week_label"
+                        ]
+                        .astype(str)
+                        .to_numpy(),
 
-                        "analysis_week":
-                            evaluation_rows[
-                                "analysis_week"
-                            ]
-                            .to_numpy(),
+                    "analysis_week":
+                        evaluation_rows[
+                            "analysis_week"
+                        ]
+                        .to_numpy(),
 
-                        "target_analysis_week":
-                            (
-                                evaluation_rows[
-                                    "analysis_week"
-                                ]
-                                .to_numpy()
-                                + horizon
-                            ),
+                    "target_year":
+                        evaluation_rows[
+                            target_year_col
+                        ]
+                        .astype(int)
+                        .to_numpy(),
 
-                        "horizon_weeks":
-                            horizon,
+                    "target_week":
+                        evaluation_rows[
+                            target_week_col
+                        ]
+                        .astype(int)
+                        .to_numpy(),
 
-                        "model":
-                            model_name,
+                    "target_analysis_week":
+                        evaluation_rows[
+                            target_analysis_week_col
+                        ]
+                        .astype(int)
+                        .to_numpy(),
 
-                        "actual":
-                            actual_eval,
+                    "horizon_weeks":
+                        horizon,
 
-                        "predicted":
-                            prediction_eval,
-                    }
-                )
+                    "model":
+                        model_name,
+
+                    "actual":
+                        actual_eval,
+
+                    "predicted":
+                        prediction_eval,
+                }
             )
 
 
@@ -1547,7 +1711,7 @@ for setting in settings:
 
 
 # ============================================================
-# FULL RESULTS
+# BUILD FULL RESULTS TABLE
 # ============================================================
 
 results_df = pd.DataFrame(
@@ -1578,28 +1742,11 @@ results_df = (
 )
 
 
-results_file = (
-    TABLE_DIR
-    / "xgboost_forecasting_results.csv"
-)
-
-
-results_df.to_csv(
-    results_file,
-    index=False
-)
-
-
 # ============================================================
-# SAVE PREDICTION-LEVEL RESULTS
+# BUILD PREDICTION-LEVEL TABLE
 # ============================================================
 
-if (
-    len(
-        prediction_frames
-    )
-    == 0
-):
+if not prediction_frames:
 
     raise RuntimeError(
         "No XGBoost prediction-level "
@@ -1620,12 +1767,127 @@ predictions_df = (
             "setting",
             "horizon_weeks",
             "model",
-            "analysis_week",
+            "target_analysis_week",
         ]
     )
     .reset_index(
         drop=True
     )
+)
+
+
+# ============================================================
+# PREDICTION SAFETY CHECKS
+# ============================================================
+
+duplicate_key = [
+    "setting",
+    "analysis_week",
+    "target_analysis_week",
+    "horizon_weeks",
+    "model",
+]
+
+
+duplicate_count = int(
+    predictions_df
+    .duplicated(
+        subset=
+            duplicate_key
+    )
+    .sum()
+)
+
+
+if (
+    duplicate_count
+    > 0
+):
+
+    raise RuntimeError(
+        "Duplicate XGBoost forecast "
+        "rows detected: "
+        f"{duplicate_count}"
+    )
+
+
+wrong_target_year = int(
+    (
+        predictions_df[
+            "target_year"
+        ]
+        != predictions_df[
+            "test_year"
+        ]
+    )
+    .sum()
+)
+
+
+if (
+    wrong_target_year
+    > 0
+):
+
+    raise RuntimeError(
+        "Leakage-safe XGBoost "
+        "test-cohort check failed: "
+        f"{wrong_target_year} rows "
+        "have target_year != test_year."
+    )
+
+
+missing_actual = int(
+    predictions_df[
+        "actual"
+    ]
+    .isna()
+    .sum()
+)
+
+
+missing_predicted = int(
+    predictions_df[
+        "predicted"
+    ]
+    .isna()
+    .sum()
+)
+
+
+if (
+    missing_actual
+    > 0
+    or missing_predicted
+    > 0
+):
+
+    raise RuntimeError(
+        "Missing values remain in "
+        "XGBoost prediction output."
+    )
+
+
+cross_year_test_forecasts = int(
+    (
+        predictions_df[
+            "source_year"
+        ]
+        != predictions_df[
+            "target_year"
+        ]
+    )
+    .sum()
+)
+
+
+# ============================================================
+# SAVE FULL RESULTS
+# ============================================================
+
+results_file = (
+    TABLE_DIR
+    / "xgboost_forecasting_results.csv"
 )
 
 
@@ -1635,15 +1897,15 @@ prediction_file = (
 )
 
 
-predictions_df.to_csv(
-    prediction_file,
+results_df.to_csv(
+    results_file,
     index=False
 )
 
 
-print(
-    "\nSaved prediction-level data:",
-    prediction_file
+predictions_df.to_csv(
+    prediction_file,
+    index=False
 )
 
 
@@ -1884,18 +2146,6 @@ ablation_summary.to_csv(
 # ============================================================
 
 print(
-    "\nXGBOOST FORECASTING RESULTS"
-)
-
-
-print(
-    results_df.to_string(
-        index=False
-    )
-)
-
-
-print(
     "\nMEDIAN PERFORMANCE ACROSS SETTINGS"
 )
 
@@ -1905,28 +2155,6 @@ print(
         index=False
     )
 )
-
-
-print(
-    "\nXGBOOST CLIMATE ABLATION"
-)
-
-
-if ablation.empty:
-
-    print(
-        "No paired climate/epidemiology "
-        "XGBoost comparisons were available."
-    )
-
-
-else:
-
-    print(
-        ablation.to_string(
-            index=False
-        )
-    )
 
 
 print(
@@ -1940,6 +2168,90 @@ print(
     )
 )
 
+
+# ============================================================
+# FINAL DIAGNOSTICS
+# ============================================================
+
+print(
+    "\nXGBOOST PREDICTION DIAGNOSTICS"
+)
+
+
+print(
+    "Rows:",
+    len(
+        predictions_df
+    )
+)
+
+
+print(
+    "Settings:",
+    sorted(
+        predictions_df[
+            "setting"
+        ]
+        .unique()
+    )
+)
+
+
+print(
+    "Horizons:",
+    sorted(
+        predictions_df[
+            "horizon_weeks"
+        ]
+        .unique()
+    )
+)
+
+
+print(
+    "Models:",
+    sorted(
+        predictions_df[
+            "model"
+        ]
+        .unique()
+    )
+)
+
+
+print(
+    "Missing actual:",
+    missing_actual
+)
+
+
+print(
+    "Missing predicted:",
+    missing_predicted
+)
+
+
+print(
+    "Duplicate forecast rows:",
+    duplicate_count
+)
+
+
+print(
+    "Rows with target_year != test_year:",
+    wrong_target_year
+)
+
+
+print(
+    "Cross-year test forecasts retained:",
+    cross_year_test_forecasts
+)
+
+
+# ============================================================
+# COMPLETE
+# ============================================================
 
 print(
     "\nXGBOOST FORECASTING COMPLETE"
