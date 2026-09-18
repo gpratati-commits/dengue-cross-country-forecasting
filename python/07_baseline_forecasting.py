@@ -1,22 +1,18 @@
 """
-Baseline dengue forecasting.
-
-Forecast horizons:
-- 1 week
-- 2 weeks
-- 4 weeks
+Multi-horizon dengue baseline forecasting.
 
 Baselines:
 1. Persistence
 2. Seasonal naive
-3. Previous-4-week mean
+3. Four-week moving average
 
-Evaluation:
-The final source year of each setting is held out as an
-out-of-sample test period.
+Forecast horizons:
+1, 2 and 4 weeks ahead.
 
-Missing surveillance observations remain missing and are
-never converted to zero.
+Outputs:
+- baseline_forecasting_results.csv
+- baseline_forecasting_summary.csv
+- baseline_predictions.csv
 """
 
 from pathlib import Path
@@ -26,45 +22,35 @@ import pandas as pd
 
 
 # ============================================================
-# PATHS
+# CONFIGURATION
 # ============================================================
 
 DATA_FILE = Path(
     "data/processed/dengue_model_features.csv"
 )
 
-OUTPUT_DIR = Path(
+TABLE_DIR = Path(
     "outputs/tables"
 )
 
-OUTPUT_DIR.mkdir(
+PREDICTION_DIR = Path(
+    "outputs/predictions"
+)
+
+HORIZONS = [
+    1,
+    2,
+    4,
+]
+
+TABLE_DIR.mkdir(
     parents=True,
     exist_ok=True
 )
 
-
-# ============================================================
-# READ DATA
-# ============================================================
-
-if not DATA_FILE.exists():
-    raise FileNotFoundError(
-        f"Feature file not found: {DATA_FILE}"
-    )
-
-df = pd.read_csv(
-    DATA_FILE
-)
-
-df = (
-    df
-    .sort_values(
-        [
-            "setting",
-            "analysis_week"
-        ]
-    )
-    .reset_index(drop=True)
+PREDICTION_DIR.mkdir(
+    parents=True,
+    exist_ok=True
 )
 
 
@@ -72,102 +58,67 @@ df = (
 # METRICS
 # ============================================================
 
-def mae(actual, predicted):
-
-    return np.mean(
-        np.abs(
-            actual - predicted
-        )
-    )
-
-
-def rmse(actual, predicted):
-
-    return np.sqrt(
-        np.mean(
-            (actual - predicted) ** 2
-        )
-    )
-
-
-# ============================================================
-# CREATE BASELINE PREDICTIONS
-# ============================================================
-
-HORIZONS = [
-    1,
-    2,
-    4
-]
-
-parts = []
-
-
-for setting, group in df.groupby(
-    "setting",
-    sort=False
+def mae(
+    actual,
+    predicted
 ):
+    """Mean absolute error."""
 
-    group = (
-        group
-        .sort_values(
-            "analysis_week"
-        )
-        .copy()
+    actual = np.asarray(
+        actual,
+        dtype=float
     )
 
-    # Forecast origin = current row t.
-    # Persistence predicts future cases using cases at t.
+    predicted = np.asarray(
+        predicted,
+        dtype=float
+    )
 
-    for horizon in HORIZONS:
-
-        group[
-            f"pred_persistence_h{horizon}"
-        ] = group["cases"]
-
-        # Seasonal naive forecast for t+h:
-        # use cases observed 52 weeks before the target,
-        # i.e. at t + h - 52.
-
-        group[
-            f"pred_seasonal_h{horizon}"
-        ] = (
-            group["cases"]
-            .shift(
-                52 - horizon
+    return float(
+        np.mean(
+            np.abs(
+                actual
+                - predicted
             )
         )
-
-        # Use only information available at forecast origin.
-        group[
-            f"pred_mean4_h{horizon}"
-        ] = (
-            group["cases"]
-            .rolling(
-                window=4,
-                min_periods=4
-            )
-            .mean()
-        )
-
-    parts.append(
-        group
     )
 
 
-df = pd.concat(
-    parts,
-    ignore_index=True
-)
+def rmse(
+    actual,
+    predicted
+):
+    """Root mean squared error."""
 
+    actual = np.asarray(
+        actual,
+        dtype=float
+    )
 
-# ============================================================
-# MASE SCALE
-# ============================================================
+    predicted = np.asarray(
+        predicted,
+        dtype=float
+    )
+
+    return float(
+        np.sqrt(
+            np.mean(
+                (
+                    actual
+                    - predicted
+                )
+                ** 2
+            )
+        )
+    )
+
 
 def mase_scale(
     training
 ):
+    """
+    Calculate one-step naive scale for MASE.
+    """
 
     training = (
         training
@@ -178,93 +129,432 @@ def mase_scale(
     )
 
     previous_cases = (
-        training["cases"]
+        training[
+            "cases"
+        ]
         .shift(1)
     )
 
     previous_week = (
-        training["analysis_week"]
+        training[
+            "analysis_week"
+        ]
         .shift(1)
     )
 
-    consecutive = (
-        (
-            training["analysis_week"]
+    valid = (
+        training[
+            "cases"
+        ].notna()
+        & previous_cases.notna()
+        & (
+            training[
+                "analysis_week"
+            ]
             - previous_week
-        )
-        == 1
+        ).eq(1)
     )
 
-    valid = (
-        training["cases"].notna()
-        & previous_cases.notna()
-        & consecutive
-    )
+    if not valid.any():
+        return np.nan
 
     differences = (
         training.loc[
             valid,
             "cases"
-        ]
-        .to_numpy()
-        -
-        previous_cases.loc[
+        ].to_numpy(
+            dtype=float
+        )
+        - previous_cases.loc[
             valid
-        ]
-        .to_numpy()
+        ].to_numpy(
+            dtype=float
+        )
     )
 
-    if len(differences) == 0:
-        return np.nan
-
-    return np.mean(
+    scale = np.mean(
         np.abs(
             differences
         )
     )
 
+    if (
+        not np.isfinite(
+            scale
+        )
+        or scale <= 0
+    ):
+        return np.nan
+
+    return float(
+        scale
+    )
+
 
 # ============================================================
-# EVALUATE BASELINES
+# READ DATA
+# ============================================================
+
+if not DATA_FILE.exists():
+    raise FileNotFoundError(
+        f"Missing file: {DATA_FILE}"
+    )
+
+data = pd.read_csv(
+    DATA_FILE
+)
+
+print(
+    f"Rows loaded: {len(data):,}"
+)
+
+
+# ============================================================
+# REQUIRED COLUMNS
+# ============================================================
+
+required = {
+    "setting",
+    "source_year",
+    "source_week",
+    "cases",
+}
+
+missing = sorted(
+    required
+    - set(
+        data.columns
+    )
+)
+
+if missing:
+    raise ValueError(
+        "Missing required columns: "
+        + ", ".join(
+            missing
+        )
+    )
+
+
+# ============================================================
+# STANDARDISE CORE VARIABLES
+# ============================================================
+
+for column in [
+    "source_year",
+    "source_week",
+    "cases",
+]:
+    data[
+        column
+    ] = pd.to_numeric(
+        data[
+            column
+        ],
+        errors="coerce"
+    )
+
+
+data = data.dropna(
+    subset=[
+        "setting",
+        "source_year",
+        "source_week",
+    ]
+).copy()
+
+
+data[
+    "source_year"
+] = (
+    data[
+        "source_year"
+    ]
+    .astype(int)
+)
+
+
+data[
+    "source_week"
+] = (
+    data[
+        "source_week"
+    ]
+    .astype(int)
+)
+
+
+data = (
+    data
+    .sort_values(
+        [
+            "setting",
+            "source_year",
+            "source_week",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
+)
+
+
+# ============================================================
+# WEEK LABEL
+# ============================================================
+
+if (
+    "week_label"
+    not in data.columns
+):
+    data[
+        "week_label"
+    ] = (
+        data[
+            "source_year"
+        ]
+        .astype(str)
+        + "-W"
+        + data[
+            "source_week"
+        ]
+        .astype(str)
+        .str.zfill(2)
+    )
+
+
+# ============================================================
+# ANALYSIS WEEK
+# ============================================================
+
+if (
+    "analysis_week"
+    not in data.columns
+):
+    data[
+        "analysis_week"
+    ] = (
+        data
+        .groupby(
+            "setting"
+        )
+        .cumcount()
+        + 1
+    )
+
+
+data[
+    "analysis_week"
+] = pd.to_numeric(
+    data[
+        "analysis_week"
+    ],
+    errors="coerce"
+)
+
+
+data = data.dropna(
+    subset=[
+        "analysis_week"
+    ]
+).copy()
+
+
+data[
+    "analysis_week"
+] = (
+    data[
+        "analysis_week"
+    ]
+    .astype(int)
+)
+
+
+# ============================================================
+# CREATE TARGETS AND BASELINE FORECASTS
+# ============================================================
+
+for horizon in HORIZONS:
+
+    target = (
+        f"target_cases_h{horizon}"
+    )
+
+    if (
+        target
+        not in data.columns
+    ):
+        data[
+            target
+        ] = (
+            data
+            .groupby(
+                "setting"
+            )[
+                "cases"
+            ]
+            .shift(
+                -horizon
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # PERSISTENCE
+    # Forecast future cases using cases observed now.
+    # --------------------------------------------------------
+
+    data[
+        f"pred_persistence_h{horizon}"
+    ] = data[
+        "cases"
+    ]
+
+
+    # --------------------------------------------------------
+    # SEASONAL NAIVE
+    # Forecast target t+h using the corresponding value
+    # approximately 52 weeks before the target.
+    # --------------------------------------------------------
+
+    seasonal_lag = (
+        52
+        - horizon
+    )
+
+    data[
+        f"pred_seasonal_h{horizon}"
+    ] = (
+        data
+        .groupby(
+            "setting"
+        )[
+            "cases"
+        ]
+        .shift(
+            seasonal_lag
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # FOUR-WEEK MOVING AVERAGE
+    # Uses information available at forecast origin.
+    # --------------------------------------------------------
+
+    data[
+        f"pred_mean4_h{horizon}"
+    ] = (
+        data
+        .groupby(
+            "setting"
+        )[
+            "cases"
+        ]
+        .transform(
+            lambda series: (
+                series
+                .rolling(
+                    window=4,
+                    min_periods=4
+                )
+                .mean()
+            )
+        )
+    )
+
+
+# ============================================================
+# STORAGE
 # ============================================================
 
 results = []
 
+prediction_frames = []
 
-for setting, group in df.groupby(
-    "setting"
-):
+
+# ============================================================
+# FORECAST EVALUATION
+# ============================================================
+
+settings = sorted(
+    data[
+        "setting"
+    ]
+    .dropna()
+    .unique()
+)
+
+
+for setting in settings:
 
     group = (
-        group
+        data.loc[
+            data[
+                "setting"
+            ]
+            == setting
+        ]
         .sort_values(
             "analysis_week"
         )
         .copy()
     )
 
-    test_year = int(
-        group[
+
+    observed_years = sorted(
+        group.loc[
+            group[
+                "cases"
+            ].notna(),
             "source_year"
-        ].max()
+        ]
+        .dropna()
+        .astype(int)
+        .unique()
     )
 
-    training = group[
-        group[
-            "source_year"
-        ]
-        < test_year
-    ].copy()
 
-    test = group[
-        group[
-            "source_year"
+    if (
+        len(
+            observed_years
+        )
+        < 2
+    ):
+        print(
+            f"Skipping {setting}: "
+            "fewer than two observed years."
+        )
+
+        continue
+
+
+    test_year = (
+        observed_years[
+            -1
         ]
-        == test_year
-    ].copy()
+    )
+
+
+    training = (
+        group.loc[
+            group[
+                "source_year"
+            ]
+            < test_year
+        ]
+        .copy()
+    )
+
 
     scale = mase_scale(
         training
+    )
+
+
+    print(
+        f"\n{setting}: "
+        f"test={test_year}"
     )
 
 
@@ -273,6 +563,7 @@ for setting, group in df.groupby(
         target = (
             f"target_cases_h{horizon}"
         )
+
 
         models = {
             "persistence":
@@ -286,62 +577,108 @@ for setting, group in df.groupby(
         }
 
 
-        for model_name, prediction in (
-            models.items()
-        ):
+        for (
+            model_name,
+            prediction_column
+        ) in models.items():
 
             evaluation = (
-                test[
-                    [
-                        target,
-                        prediction
+                group.loc[
+                    group[
+                        "source_year"
                     ]
+                    == test_year,
+                    [
+                        "setting",
+                        "source_year",
+                        "source_week",
+                        "week_label",
+                        "analysis_week",
+                        target,
+                        prediction_column,
+                    ],
                 ]
-                .dropna()
+                .rename(
+                    columns={
+                        target:
+                            "actual",
+
+                        prediction_column:
+                            "predicted",
+                    }
+                )
+                .dropna(
+                    subset=[
+                        "actual",
+                        "predicted",
+                    ]
+                )
+                .copy()
             )
 
+
             if evaluation.empty:
+
+                print(
+                    f"Skipping {setting}, "
+                    f"horizon={horizon}, "
+                    f"model={model_name}: "
+                    "no complete test rows."
+                )
+
                 continue
+
 
             actual = (
                 evaluation[
-                    target
+                    "actual"
                 ]
-                .to_numpy()
+                .to_numpy(
+                    dtype=float
+                )
             )
+
 
             predicted = (
                 evaluation[
-                    prediction
+                    "predicted"
                 ]
-                .to_numpy()
+                .to_numpy(
+                    dtype=float
+                )
             )
+
 
             model_mae = mae(
                 actual,
                 predicted
             )
 
+
             model_rmse = rmse(
                 actual,
                 predicted
             )
 
+
             if (
-                pd.notna(scale)
+                pd.notna(
+                    scale
+                )
                 and scale > 0
             ):
-
                 model_mase = (
                     model_mae
                     / scale
                 )
 
             else:
+                model_mase = np.nan
 
-                model_mase = (
-                    np.nan
-                )
+
+            # ------------------------------------------------
+            # SUMMARY RESULT
+            # ------------------------------------------------
 
             results.append(
                 {
@@ -358,7 +695,9 @@ for setting, group in df.groupby(
                         model_name,
 
                     "n_predictions":
-                        len(evaluation),
+                        len(
+                            evaluation
+                        ),
 
                     "mae":
                         model_mae,
@@ -372,32 +711,130 @@ for setting, group in df.groupby(
             )
 
 
+            # ------------------------------------------------
+            # PREDICTION-LEVEL RESULT
+            # ------------------------------------------------
+
+            detail = (
+                evaluation
+                .copy()
+            )
+
+
+            detail[
+                "test_year"
+            ] = test_year
+
+
+            detail[
+                "target_analysis_week"
+            ] = (
+                detail[
+                    "analysis_week"
+                ]
+                + horizon
+            )
+
+
+            detail[
+                "horizon_weeks"
+            ] = horizon
+
+
+            detail[
+                "model"
+            ] = model_name
+
+
+            detail = detail[
+                [
+                    "setting",
+                    "test_year",
+                    "source_year",
+                    "source_week",
+                    "week_label",
+                    "analysis_week",
+                    "target_analysis_week",
+                    "horizon_weeks",
+                    "model",
+                    "actual",
+                    "predicted",
+                ]
+            ]
+
+
+            prediction_frames.append(
+                detail
+            )
+
+
 # ============================================================
-# SAVE RESULTS
+# CREATE RESULTS DATAFRAME
 # ============================================================
 
 results_df = pd.DataFrame(
     results
 )
 
-results_file = (
-    OUTPUT_DIR
-    / "baseline_forecasting_results.csv"
+
+if results_df.empty:
+
+    raise RuntimeError(
+        "No baseline forecasts were "
+        "successfully evaluated."
+    )
+
+
+results_df = (
+    results_df
+    .sort_values(
+        [
+            "setting",
+            "horizon_weeks",
+            "model",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
 )
 
-results_df.to_csv(
-    results_file,
-    index=False
+
+# ============================================================
+# CREATE PREDICTION DATAFRAME
+# ============================================================
+
+if (
+    len(
+        prediction_frames
+    )
+    == 0
+):
+
+    raise RuntimeError(
+        "No baseline prediction-level "
+        "rows were generated."
+    )
+
+
+predictions_df = pd.concat(
+    prediction_frames,
+    ignore_index=True
 )
 
 
-print(
-    "\nBASELINE FORECASTING RESULTS"
-)
-
-print(
-    results_df.to_string(
-        index=False
+predictions_df = (
+    predictions_df
+    .sort_values(
+        [
+            "setting",
+            "horizon_weeks",
+            "model",
+            "analysis_week",
+        ]
+    )
+    .reset_index(
+        drop=True
     )
 )
 
@@ -411,7 +848,7 @@ summary = (
     .groupby(
         [
             "horizon_weeks",
-            "model"
+            "model",
         ],
         as_index=False
     )
@@ -434,14 +871,38 @@ summary = (
         settings_evaluated=(
             "setting",
             "nunique"
-        )
+        ),
     )
 )
 
+
+# ============================================================
+# SAVE OUTPUTS
+# ============================================================
+
+results_file = (
+    TABLE_DIR
+    / "baseline_forecasting_results.csv"
+)
+
+
 summary_file = (
-    OUTPUT_DIR
+    TABLE_DIR
     / "baseline_forecasting_summary.csv"
 )
+
+
+prediction_file = (
+    PREDICTION_DIR
+    / "baseline_predictions.csv"
+)
+
+
+results_df.to_csv(
+    results_file,
+    index=False
+)
+
 
 summary.to_csv(
     summary_file,
@@ -449,9 +910,20 @@ summary.to_csv(
 )
 
 
+predictions_df.to_csv(
+    prediction_file,
+    index=False
+)
+
+
+# ============================================================
+# PRINT RESULTS
+# ============================================================
+
 print(
     "\nMEDIAN PERFORMANCE ACROSS SETTINGS"
 )
+
 
 print(
     summary.to_string(
@@ -464,10 +936,17 @@ print(
     "\nBASELINE FORECASTING COMPLETE"
 )
 
+
 print(
     f"Saved: {results_file}"
 )
 
+
 print(
     f"Saved: {summary_file}"
+)
+
+
+print(
+    f"Saved: {prediction_file}"
 )
