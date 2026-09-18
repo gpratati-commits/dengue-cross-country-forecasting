@@ -1,33 +1,26 @@
 """
-Temporally validated XGBoost dengue forecasting.
+Temporally validated multi-horizon dengue forecasting with XGBoost.
 
-Models
-------
-1. xgboost_epidemiology:
-   current/recent dengue history + seasonality
+Two XGBoost models are evaluated:
 
-2. xgboost_climate:
-   the same epidemiological predictors + climate predictors
+1. xgboost_epidemiology
+   Dengue-history + seasonal predictors.
 
-Forecast horizons
------------------
-1, 2 and 4 weeks ahead.
+2. xgboost_climate
+   Dengue-history + seasonal predictors + climate predictors.
 
-Validation design
------------------
-For each setting:
-- years before the final two observed years are used for training;
-- the penultimate year is used for validation/early stopping;
-- the final year is held out as the test set;
-- after early stopping, the model is refitted on training + validation data;
-- horizon-safe boundaries prevent target leakage across the
-  train/validation/test boundaries.
+Temporal evaluation:
+- Training = years before validation year
+- Validation = penultimate observed year
+- Test = latest observed year
 
-Missing surveillance observations remain missing.
-They are never converted to zero.
+The validation year selects the number of boosting rounds using
+early stopping. The model is then refitted using training +
+validation data and evaluated on the held-out test year.
 """
 
 from pathlib import Path
+import math
 
 import numpy as np
 import pandas as pd
@@ -35,134 +28,30 @@ import xgboost as xgb
 
 
 # ============================================================
-# PATHS
+# CONFIGURATION
 # ============================================================
 
 DATA_FILE = Path(
     "data/processed/dengue_model_features.csv"
 )
 
-OUTPUT_DIR = Path(
+TABLE_DIR = Path(
     "outputs/tables"
 )
 
-OUTPUT_DIR.mkdir(
+PREDICTION_DIR = Path(
+    "outputs/predictions"
+)
+
+TABLE_DIR.mkdir(
     parents=True,
     exist_ok=True
 )
 
-
-# ============================================================
-# READ DATA
-# ============================================================
-
-if not DATA_FILE.exists():
-
-    raise FileNotFoundError(
-        f"Feature dataset not found: {DATA_FILE}"
-    )
-
-
-df = pd.read_csv(
-    DATA_FILE
+PREDICTION_DIR.mkdir(
+    parents=True,
+    exist_ok=True
 )
-
-df = (
-    df
-    .sort_values(
-        [
-            "setting",
-            "analysis_week"
-        ]
-    )
-    .reset_index(
-        drop=True
-    )
-)
-
-
-print(
-    f"Rows loaded: {len(df):,}"
-)
-
-
-# ============================================================
-# FEATURES
-# ============================================================
-
-EPIDEMIOLOGY_FEATURES = [
-
-    "log_cases",
-
-    "log_cases_lag_1",
-
-    "log_cases_lag_2",
-
-    "log_cases_lag_4",
-
-    "log_cases_lag_8",
-
-    "log_cases_lag_52",
-
-    "log_cases_roll4",
-
-    "season_sin",
-
-    "season_cos",
-]
-
-
-CLIMATE_FEATURES = [
-
-    "log_rain_era5_lag_0",
-
-    "log_rain_era5_lag_1",
-
-    "log_rain_era5_lag_2",
-
-    "log_rain_era5_lag_4",
-
-    "log_rain_era5_lag_6",
-
-    "log_rain_era5_lag_8",
-
-
-    "temp_era5_lag_0",
-
-    "temp_era5_lag_1",
-
-    "temp_era5_lag_2",
-
-    "temp_era5_lag_4",
-
-    "temp_era5_lag_6",
-
-    "temp_era5_lag_8",
-
-
-    "humidity_era5_lag_0",
-
-    "humidity_era5_lag_1",
-
-    "humidity_era5_lag_2",
-
-    "humidity_era5_lag_4",
-
-    "humidity_era5_lag_6",
-
-    "humidity_era5_lag_8",
-]
-
-
-MODEL_FEATURES = {
-
-    "xgboost_epidemiology":
-        EPIDEMIOLOGY_FEATURES,
-
-    "xgboost_climate":
-        EPIDEMIOLOGY_FEATURES
-        + CLIMATE_FEATURES,
-}
 
 
 HORIZONS = [
@@ -172,70 +61,73 @@ HORIZONS = [
 ]
 
 
-# ============================================================
-# REQUIRED COLUMN CHECK
-# ============================================================
+SEED = 42
 
-required_columns = {
+MIN_TRAIN_ROWS = 52
+MIN_VALIDATION_ROWS = 20
+MIN_TEST_ROWS = 20
 
-    "setting",
+MAX_BOOST_ROUNDS = 2000
 
-    "analysis_week",
+EARLY_STOPPING_ROUNDS = 100
 
-    "source_year",
 
-    "cases",
-
-    *EPIDEMIOLOGY_FEATURES,
-
-    *CLIMATE_FEATURES,
+XGB_PARAMS = {
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",
+    "eta": 0.03,
+    "max_depth": 3,
+    "min_child_weight": 3,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.0,
+    "reg_lambda": 1.0,
+    "seed": SEED,
+    "tree_method": "hist",
 }
 
 
-for horizon in HORIZONS:
-
-    required_columns.add(
-        f"target_log_h{horizon}"
-    )
-
-    required_columns.add(
-        f"target_cases_h{horizon}"
-    )
-
-
-missing_columns = sorted(
-    required_columns.difference(
-        df.columns
-    )
-)
-
-
-if missing_columns:
-
-    raise KeyError(
-
-        "The feature dataset is missing "
-        "required columns:\n"
-
-        + "\n".join(
-            missing_columns
-        )
-    )
-
-
 # ============================================================
-# METRICS
+# HELPER FUNCTIONS
 # ============================================================
+
+def first_existing(
+    columns,
+    candidates
+):
+    """
+    Return the first candidate column that exists.
+    """
+
+    for column in candidates:
+
+        if column in columns:
+
+            return column
+
+    return None
+
 
 def mae(
     actual,
     predicted
 ):
+    """
+    Mean absolute error.
+    """
+
+    actual = np.asarray(
+        actual,
+        dtype=float
+    )
+
+    predicted = np.asarray(
+        predicted,
+        dtype=float
+    )
 
     return float(
-
         np.mean(
-
             np.abs(
                 actual
                 - predicted
@@ -248,121 +140,443 @@ def rmse(
     actual,
     predicted
 ):
+    """
+    Root mean squared error.
+    """
+
+    actual = np.asarray(
+        actual,
+        dtype=float
+    )
+
+    predicted = np.asarray(
+        predicted,
+        dtype=float
+    )
 
     return float(
-
         np.sqrt(
-
             np.mean(
-
                 (
                     actual
                     - predicted
-                ) ** 2
+                )
+                ** 2
             )
         )
     )
 
 
-# ============================================================
-# MASE DENOMINATOR
-# ============================================================
-
 def mase_scale(
-    history
+    training
 ):
+    """
+    Calculate the one-step naive scaling term for MASE.
 
-    history = (
+    Only consecutive observed weeks are used.
+    """
 
-        history
-
+    training = (
+        training
         .sort_values(
             "analysis_week"
         )
-
         .copy()
     )
 
-
     previous_cases = (
-
-        history[
+        training[
             "cases"
         ]
-
-        .shift(
-            1
-        )
+        .shift(1)
     )
-
 
     previous_week = (
-
-        history[
+        training[
             "analysis_week"
         ]
-
-        .shift(
-            1
-        )
+        .shift(1)
     )
-
 
     consecutive = (
-
-        (
-            history[
-                "analysis_week"
-            ]
-
-            - previous_week
-        )
-
-        == 1
-    )
-
+        training[
+            "analysis_week"
+        ]
+        - previous_week
+    ).eq(1)
 
     valid = (
-
-        history[
+        training[
             "cases"
         ].notna()
-
         & previous_cases.notna()
-
         & consecutive
     )
-
 
     if not valid.any():
 
         return np.nan
 
-
     differences = (
-
-        history.loc[
+        training.loc[
             valid,
             "cases"
-        ].to_numpy()
-
-        -
-
-        previous_cases.loc[
+        ].to_numpy(
+            dtype=float
+        )
+        - previous_cases.loc[
             valid
-        ].to_numpy()
-    )
-
-
-    return float(
-
-        np.mean(
-
-            np.abs(
-                differences
-            )
+        ].to_numpy(
+            dtype=float
         )
     )
+
+    scale = np.mean(
+        np.abs(
+            differences
+        )
+    )
+
+    if (
+        not np.isfinite(
+            scale
+        )
+        or scale <= 0
+    ):
+
+        return np.nan
+
+    return float(
+        scale
+    )
+
+
+# ============================================================
+# FEATURE ENGINEERING
+# ============================================================
+
+def add_safe_features(
+    data
+):
+    """
+    Create leakage-safe epidemiological predictors.
+    """
+
+    data = (
+        data
+        .copy()
+        .sort_values(
+            [
+                "setting",
+                "analysis_week",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    if (
+        "log_cases"
+        not in data.columns
+    ):
+
+        data[
+            "log_cases"
+        ] = np.log1p(
+            data[
+                "cases"
+            ].clip(
+                lower=0
+            )
+        )
+
+    if (
+        "season_sin"
+        not in data.columns
+    ):
+
+        data[
+            "season_sin"
+        ] = np.sin(
+            2.0
+            * math.pi
+            * data[
+                "source_week"
+            ]
+            / 52.0
+        )
+
+    if (
+        "season_cos"
+        not in data.columns
+    ):
+
+        data[
+            "season_cos"
+        ] = np.cos(
+            2.0
+            * math.pi
+            * data[
+                "source_week"
+            ]
+            / 52.0
+        )
+
+    for lag in [
+        1,
+        2,
+        4,
+        8,
+    ]:
+
+        column = (
+            f"log_cases_lag_{lag}"
+        )
+
+        if (
+            column
+            not in data.columns
+        ):
+
+            data[
+                column
+            ] = (
+                data
+                .groupby(
+                    "setting",
+                    sort=False
+                )[
+                    "log_cases"
+                ]
+                .shift(
+                    lag
+                )
+            )
+
+    for window in [
+        4,
+        8,
+    ]:
+
+        column = (
+            f"log_cases_roll_mean_{window}"
+        )
+
+        if (
+            column
+            not in data.columns
+        ):
+
+            data[
+                column
+            ] = (
+                data
+                .groupby(
+                    "setting",
+                    sort=False
+                )[
+                    "log_cases"
+                ]
+                .transform(
+                    lambda series: (
+                        series
+                        .shift(1)
+                        .rolling(
+                            window=window,
+                            min_periods=window
+                        )
+                        .mean()
+                    )
+                )
+            )
+
+    return data
+
+
+# ============================================================
+# CLIMATE VARIABLES
+# ============================================================
+
+def choose_climate_columns(
+    data
+):
+    """
+    Detect rainfall, temperature and humidity columns.
+    """
+
+    columns = set(
+        data.columns
+    )
+
+    rainfall = first_existing(
+        columns,
+        [
+            "log_rain_era5",
+            "rain_era5",
+            "rainfall_era5",
+            "rainfall",
+            "Rainfall",
+            "precipitation",
+            "Precipitation",
+        ]
+    )
+
+    temperature = first_existing(
+        columns,
+        [
+            "temp_era5",
+            "temperature_era5",
+            "temperature",
+            "Temperature",
+            "TempMean_MERRA2",
+            "Temp_MERRA2",
+        ]
+    )
+
+    humidity = first_existing(
+        columns,
+        [
+            "humidity_era5",
+            "relative_humidity_era5",
+            "humidity",
+            "Humidity",
+            "RH",
+        ]
+    )
+
+    climate = {
+        "rainfall":
+            rainfall,
+
+        "temperature":
+            temperature,
+
+        "humidity":
+            humidity,
+    }
+
+    climate = {
+        name: column
+        for (
+            name,
+            column
+        )
+        in climate.items()
+        if column is not None
+    }
+
+    return climate
+
+
+def add_climate_lags(
+    data,
+    climate_columns
+):
+    """
+    Create current-source-week and lagged climate predictors.
+    """
+
+    data = data.copy()
+
+    climate_features = []
+
+    for (
+        climate_name,
+        source_column
+    ) in climate_columns.items():
+
+        current_column = (
+            f"climate_{climate_name}_lag_0"
+        )
+
+        data[
+            current_column
+        ] = data[
+            source_column
+        ]
+
+        climate_features.append(
+            current_column
+        )
+
+        for lag in [
+            1,
+            2,
+            4,
+            6,
+            8,
+        ]:
+
+            lag_column = (
+                f"climate_{climate_name}_lag_{lag}"
+            )
+
+            data[
+                lag_column
+            ] = (
+                data
+                .groupby(
+                    "setting",
+                    sort=False
+                )[
+                    source_column
+                ]
+                .shift(
+                    lag
+                )
+            )
+
+            climate_features.append(
+                lag_column
+            )
+
+    return (
+        data,
+        climate_features
+    )
+
+
+# ============================================================
+# FORECAST TARGETS
+# ============================================================
+
+def add_targets_if_needed(
+    data
+):
+    """
+    Create future case targets only when they do not already exist.
+    """
+
+    data = data.copy()
+
+    for horizon in HORIZONS:
+
+        target = (
+            f"target_cases_h{horizon}"
+        )
+
+        if (
+            target
+            not in data.columns
+        ):
+
+            data[
+                target
+            ] = (
+                data
+                .groupby(
+                    "setting",
+                    sort=False
+                )[
+                    "cases"
+                ]
+                .shift(
+                    -horizon
+                )
+            )
+
+    return data
 
 
 # ============================================================
@@ -370,602 +584,724 @@ def mase_scale(
 # ============================================================
 
 def train_xgboost(
-
     train_data,
-
     validation_data,
-
     features,
-
     target
 ):
-
     """
-    First use validation data for early stopping.
+    Select boosting rounds using validation data.
 
-    Then refit the final model using training + validation
-    data with exactly the selected number of boosting rounds.
-
-    Test data are never used here.
+    Then refit on training + validation data.
     """
-
 
     dtrain = xgb.DMatrix(
-
         train_data[
             features
         ],
-
-        label=
+        label=np.log1p(
             train_data[
                 target
-            ],
-
-        feature_names=
-            features,
+            ].clip(
+                lower=0
+            )
+        ),
+        feature_names=features,
     )
 
-
     dvalidation = xgb.DMatrix(
-
         validation_data[
             features
         ],
-
-        label=
+        label=np.log1p(
             validation_data[
                 target
-            ],
-
-        feature_names=
-            features,
+            ].clip(
+                lower=0
+            )
+        ),
+        feature_names=features,
     )
 
-
-    params = {
-
-        "objective":
-            "reg:squarederror",
-
-        "eval_metric":
-            "rmse",
-
-        "eta":
-            0.03,
-
-        "max_depth":
-            4,
-
-        "min_child_weight":
-            5,
-
-        "subsample":
-            0.8,
-
-        "colsample_bytree":
-            0.8,
-
-        "lambda":
-            1.0,
-
-        "alpha":
-            0.0,
-
-        "tree_method":
-            "hist",
-
-        "seed":
-            42,
-    }
-
-
-    # --------------------------------------------------------
-    # STAGE 1
-    # Determine optimal number of boosting rounds
-    # --------------------------------------------------------
-
     preliminary_model = xgb.train(
-
-        params=
-            params,
-
-        dtrain=
-            dtrain,
-
+        params=XGB_PARAMS,
+        dtrain=dtrain,
         num_boost_round=
-            2000,
-
+            MAX_BOOST_ROUNDS,
         evals=[
             (
                 dvalidation,
                 "validation"
             )
         ],
-
         early_stopping_rounds=
-            100,
-
-        verbose_eval=
-            False,
+            EARLY_STOPPING_ROUNDS,
+        verbose_eval=False,
     )
 
+    if hasattr(
+        preliminary_model,
+        "best_iteration"
+    ):
 
-    best_rounds = (
+        best_rounds = (
+            int(
+                preliminary_model
+                .best_iteration
+            )
+            + 1
+        )
 
-        preliminary_model.best_iteration
+    else:
 
-        + 1
+        best_rounds = (
+            MAX_BOOST_ROUNDS
+        )
+
+    best_rounds = max(
+        1,
+        min(
+            best_rounds,
+            MAX_BOOST_ROUNDS
+        )
     )
-
-
-    # --------------------------------------------------------
-    # STAGE 2
-    # Refit on training + validation
-    # --------------------------------------------------------
 
     final_training = pd.concat(
-
         [
             train_data,
-
-            validation_data
+            validation_data,
         ],
-
-        ignore_index=True
+        ignore_index=True,
     )
 
-
     dfinal = xgb.DMatrix(
-
         final_training[
             features
         ],
-
-        label=
+        label=np.log1p(
             final_training[
                 target
-            ],
-
-        feature_names=
-            features,
+            ].clip(
+                lower=0
+            )
+        ),
+        feature_names=features,
     )
-
 
     final_model = xgb.train(
-
-        params=
-            params,
-
-        dtrain=
-            dfinal,
-
+        params=XGB_PARAMS,
+        dtrain=dfinal,
         num_boost_round=
             best_rounds,
-
-        verbose_eval=
-            False,
+        verbose_eval=False,
     )
 
-
     return (
-
         final_model,
-
         best_rounds
     )
 
 
+def predict_cases(
+    model,
+    data,
+    features
+):
+    """
+    Generate case-count predictions.
+    """
+
+    dtest = xgb.DMatrix(
+        data[
+            features
+        ],
+        feature_names=features,
+    )
+
+    prediction_log = (
+        model.predict(
+            dtest
+        )
+    )
+
+    prediction = np.expm1(
+        prediction_log
+    )
+
+    prediction = np.clip(
+        prediction,
+        a_min=0.0,
+        a_max=None,
+    )
+
+    return prediction
+
+
 # ============================================================
-# TEMPORAL EVALUATION
+# READ DATA
+# ============================================================
+
+if not DATA_FILE.exists():
+
+    raise FileNotFoundError(
+        "Processed feature file "
+        f"not found: {DATA_FILE}"
+    )
+
+
+data = pd.read_csv(
+    DATA_FILE
+)
+
+
+print(
+    f"Rows loaded: {len(data):,}"
+)
+
+
+# ============================================================
+# REQUIRED COLUMNS
+# ============================================================
+
+required = {
+    "setting",
+    "source_year",
+    "source_week",
+    "cases",
+}
+
+
+missing_required = sorted(
+    required
+    - set(
+        data.columns
+    )
+)
+
+
+if missing_required:
+
+    raise ValueError(
+        "Missing required columns: "
+        + ", ".join(
+            missing_required
+        )
+    )
+
+
+# ============================================================
+# STANDARDISE CORE VARIABLES
+# ============================================================
+
+data[
+    "source_year"
+] = pd.to_numeric(
+    data[
+        "source_year"
+    ],
+    errors="coerce"
+)
+
+
+data[
+    "source_week"
+] = pd.to_numeric(
+    data[
+        "source_week"
+    ],
+    errors="coerce"
+)
+
+
+data[
+    "cases"
+] = pd.to_numeric(
+    data[
+        "cases"
+    ],
+    errors="coerce"
+)
+
+
+data = data.dropna(
+    subset=[
+        "setting",
+        "source_year",
+        "source_week",
+    ]
+).copy()
+
+
+data[
+    "source_year"
+] = (
+    data[
+        "source_year"
+    ]
+    .astype(int)
+)
+
+
+data[
+    "source_week"
+] = (
+    data[
+        "source_week"
+    ]
+    .astype(int)
+)
+
+
+# ============================================================
+# WEEK LABEL
+# ============================================================
+
+if (
+    "week_label"
+    not in data.columns
+):
+
+    data[
+        "week_label"
+    ] = (
+        data[
+            "source_year"
+        ]
+        .astype(str)
+        + "-W"
+        + data[
+            "source_week"
+        ]
+        .astype(str)
+        .str.zfill(2)
+    )
+
+
+# ============================================================
+# ANALYSIS WEEK
+# ============================================================
+
+if (
+    "analysis_week"
+    not in data.columns
+):
+
+    data = (
+        data
+        .sort_values(
+            [
+                "setting",
+                "source_year",
+                "source_week",
+            ]
+        )
+        .copy()
+    )
+
+    data[
+        "analysis_week"
+    ] = (
+        data
+        .groupby(
+            "setting",
+            sort=False
+        )
+        .cumcount()
+        + 1
+    )
+
+
+data[
+    "analysis_week"
+] = pd.to_numeric(
+    data[
+        "analysis_week"
+    ],
+    errors="coerce"
+)
+
+
+data = data.dropna(
+    subset=[
+        "analysis_week"
+    ]
+).copy()
+
+
+data[
+    "analysis_week"
+] = (
+    data[
+        "analysis_week"
+    ]
+    .astype(int)
+)
+
+
+# ============================================================
+# BUILD FEATURES
+# ============================================================
+
+data = add_safe_features(
+    data
+)
+
+
+climate_columns = (
+    choose_climate_columns(
+        data
+    )
+)
+
+
+if (
+    len(
+        climate_columns
+    )
+    < 3
+):
+
+    print(
+        "\nWarning: fewer than three "
+        "climate variable families "
+        "were detected."
+    )
+
+    print(
+        "Detected climate columns:",
+        climate_columns
+    )
+
+
+(
+    data,
+    climate_features
+) = add_climate_lags(
+    data,
+    climate_columns
+)
+
+
+data = add_targets_if_needed(
+    data
+)
+
+
+# ============================================================
+# EPIDEMIOLOGICAL FEATURES
+# ============================================================
+
+epi_features = [
+    "log_cases",
+    "log_cases_lag_1",
+    "log_cases_lag_2",
+    "log_cases_lag_4",
+    "log_cases_lag_8",
+    "log_cases_roll_mean_4",
+    "log_cases_roll_mean_8",
+    "season_sin",
+    "season_cos",
+]
+
+
+epi_features = [
+    column
+    for column
+    in epi_features
+    if column
+    in data.columns
+]
+
+
+if (
+    len(
+        epi_features
+    )
+    == 0
+):
+
+    raise RuntimeError(
+        "No epidemiological "
+        "XGBoost features "
+        "could be constructed."
+    )
+
+
+climate_model_features = (
+    epi_features
+    + climate_features
+)
+
+
+climate_model_features = list(
+    dict.fromkeys(
+        climate_model_features
+    )
+)
+
+
+if (
+    len(
+        climate_features
+    )
+    == 0
+):
+
+    raise RuntimeError(
+        "No climate predictors were detected. "
+        "Check the climate column names in "
+        "data/processed/"
+        "dengue_model_features.csv."
+    )
+
+
+print(
+    "\nEpidemiology features:",
+    epi_features
+)
+
+
+print(
+    "\nClimate features:",
+    climate_features
+)
+
+
+# ============================================================
+# MODEL STORAGE
 # ============================================================
 
 results = []
 
+prediction_frames = []
 
-for setting, group in df.groupby(
 
-    "setting",
+settings = sorted(
+    data[
+        "setting"
+    ]
+    .dropna()
+    .unique()
+)
 
-    sort=True
-):
 
+# ============================================================
+# MODEL LOOP
+# ============================================================
+
+for setting in settings:
 
     group = (
-
-        group
-
+        data.loc[
+            data[
+                "setting"
+            ]
+            == setting
+        ]
         .sort_values(
             "analysis_week"
         )
-
-        .reset_index(
-            drop=True
-        )
-
         .copy()
     )
 
-
-    available_years = sorted(
-
-        group[
+    observed_years = sorted(
+        group.loc[
+            group[
+                "cases"
+            ].notna(),
             "source_year"
         ]
-
         .dropna()
-
-        .astype(
-            int
-        )
-
+        .astype(int)
         .unique()
-
-        .tolist()
     )
 
-
-    if len(
-        available_years
-    ) < 3:
+    if (
+        len(
+            observed_years
+        )
+        < 3
+    ):
 
         print(
-
-            f"Skipping {setting}: "
-            "fewer than 3 observed years."
+            f"\nSkipping {setting}: "
+            "fewer than three "
+            "observed years."
         )
 
         continue
 
-
     validation_year = (
-        available_years[
+        observed_years[
             -2
         ]
     )
 
-
     test_year = (
-        available_years[
+        observed_years[
             -1
         ]
     )
 
-
-    validation_positions = np.flatnonzero(
-
-        group[
-            "source_year"
-        ]
-
-        .eq(
-            validation_year
-        )
-
-        .to_numpy()
-    )
-
-
-    test_positions = np.flatnonzero(
-
-        group[
-            "source_year"
-        ]
-
-        .eq(
-            test_year
-        )
-
-        .to_numpy()
-    )
-
-
-    if (
-
-        len(
-            validation_positions
-        ) == 0
-
-        or
-
-        len(
-            test_positions
-        ) == 0
-    ):
-
-        print(
-
-            f"Skipping {setting}: "
-            "could not locate temporal boundaries."
-        )
-
-        continue
-
-
-    validation_start = int(
-
-        validation_positions[
-            0
-        ]
-    )
-
-
-    test_start = int(
-
-        test_positions[
-            0
-        ]
-    )
-
-
-    # --------------------------------------------------------
-    # MASE denominator
-    #
-    # Use all observed history before the test year.
-    # --------------------------------------------------------
-
-    scale_data = (
-
-        group
-
-        .iloc[
-            :test_start
-        ]
-
-        .copy()
-    )
-
-
-    scale = mase_scale(
-        scale_data
-    )
-
-
     print(
-
-        "\n"
-
-        f"{setting}: "
-
+        f"\n{setting}: "
         f"validation={validation_year}, "
-
         f"test={test_year}"
     )
 
-
-    positions = np.arange(
-        len(
-            group
-        )
-    )
-
-
-    # ========================================================
-    # FORECAST HORIZONS
-    # ========================================================
-
     for horizon in HORIZONS:
 
-
-        target_log = (
-
-            f"target_log_h{horizon}"
-        )
-
-
-        target_cases = (
-
+        target = (
             f"target_cases_h{horizon}"
         )
 
+        if (
+            target
+            not in group.columns
+        ):
 
-        # ----------------------------------------------------
-        # HORIZON-SAFE SPLITTING
-        #
-        # If origin is t and forecast horizon is h,
-        # the target occurs at t+h.
-        #
-        # Training targets must remain before validation.
-        # Validation targets must remain before test.
-        # ----------------------------------------------------
-
-        train_mask = (
-
-            positions
-            + horizon
-
-            < validation_start
-        )
-
-
-        validation_mask = (
-
-            (
-                positions
-                >= validation_start
+            print(
+                f"Skipping {setting}, "
+                f"horizon={horizon}: "
+                f"{target} is missing."
             )
 
-            &
-
-            (
-                positions
-                + horizon
-
-                < test_start
-            )
-        )
-
-
-        test_mask = (
-
-            positions
-            >= test_start
-        )
-
-
-        train_full = (
-
-            group.loc[
-                train_mask
-            ]
-
-            .copy()
-        )
-
-
-        validation_full = (
-
-            group.loc[
-                validation_mask
-            ]
-
-            .copy()
-        )
-
-
-        test_full = (
-
-            group.loc[
-                test_mask
-            ]
-
-            .copy()
-        )
+            continue
 
 
         # ----------------------------------------------------
-        # SAME OBSERVATIONS FOR BOTH MODELS
-        #
-        # This makes epidemiology-only versus climate
-        # comparison fair.
+        # COMMON COMPLETE-DATA COHORT
         # ----------------------------------------------------
 
-        complete_case_columns = list(
-
+        common_required = list(
             dict.fromkeys(
-
-                EPIDEMIOLOGY_FEATURES
-
-                + CLIMATE_FEATURES
-
+                climate_model_features
                 + [
-
-                    target_log,
-
-                    target_cases,
+                    target
                 ]
             )
         )
 
+        complete_mask = (
+            group[
+                common_required
+            ]
+            .notna()
+            .all(
+                axis=1
+            )
+        )
+
+        complete = (
+            group.loc[
+                complete_mask
+            ]
+            .copy()
+        )
+
 
         train_data = (
-
-            train_full[
-                complete_case_columns
+            complete.loc[
+                complete[
+                    "source_year"
+                ]
+                < validation_year
             ]
-
-            .replace(
-                [
-                    np.inf,
-                    -np.inf
-                ],
-                np.nan
-            )
-
-            .dropna()
-
             .copy()
         )
 
 
         validation_data = (
-
-            validation_full[
-                complete_case_columns
+            complete.loc[
+                complete[
+                    "source_year"
+                ]
+                == validation_year
             ]
-
-            .replace(
-                [
-                    np.inf,
-                    -np.inf
-                ],
-                np.nan
-            )
-
-            .dropna()
-
             .copy()
         )
 
 
         test_data = (
-
-            test_full[
-                complete_case_columns
+            complete.loc[
+                complete[
+                    "source_year"
+                ]
+                == test_year
             ]
-
-            .replace(
-                [
-                    np.inf,
-                    -np.inf
-                ],
-                np.nan
-            )
-
-            .dropna()
-
             .copy()
         )
 
 
         if (
-
             len(
                 train_data
-            ) < 100
-
-            or
-
-            len(
+            )
+            < MIN_TRAIN_ROWS
+            or len(
                 validation_data
-            ) < 10
-
-            or
-
-            len(
+            )
+            < MIN_VALIDATION_ROWS
+            or len(
                 test_data
-            ) < 10
+            )
+            < MIN_TEST_ROWS
         ):
 
             print(
-
                 f"Skipping {setting}, "
-
                 f"horizon={horizon}: "
-
                 "insufficient complete data "
-
                 f"(train={len(train_data)}, "
-
-                f"validation={len(validation_data)}, "
-
+                f"validation="
+                f"{len(validation_data)}, "
                 f"test={len(test_data)})."
             )
 
             continue
 
 
-        # ====================================================
-        # MODEL TYPES
-        # ====================================================
+        # ----------------------------------------------------
+        # MASE SCALE
+        # ----------------------------------------------------
+
+        scale_training = (
+            group.loc[
+                group[
+                    "source_year"
+                ]
+                < validation_year
+            ]
+            .copy()
+        )
+
+        scale = mase_scale(
+            scale_training
+        )
+
+
+        # ----------------------------------------------------
+        # TWO XGBOOST MODELS
+        # ----------------------------------------------------
+
+        models = {
+            "xgboost_epidemiology":
+                epi_features,
+
+            "xgboost_climate":
+                climate_model_features,
+        }
+
 
         for (
             model_name,
             features
-        ) in MODEL_FEATURES.items():
+        ) in models.items():
 
-
-            model, best_rounds = train_xgboost(
-
+            (
+                model,
+                best_rounds
+            ) = train_xgboost(
                 train_data=
                     train_data,
 
@@ -976,51 +1312,28 @@ for setting, group in df.groupby(
                     features,
 
                 target=
-                    target_log,
+                    target,
             )
 
 
-            dtest = xgb.DMatrix(
+            prediction_eval = (
+                predict_cases(
+                    model=
+                        model,
 
+                    data=
+                        test_data,
+
+                    features=
+                        features,
+                )
+            )
+
+
+            actual_eval = (
                 test_data[
-                    features
-                ],
-
-                feature_names=
-                    features,
-            )
-
-
-            prediction_log = model.predict(
-
-                dtest
-            )
-
-
-            predictions = np.expm1(
-
-                prediction_log
-            )
-
-
-            # Negative predicted case counts are impossible.
-
-            predictions = np.clip(
-
-                predictions,
-
-                0,
-
-                None
-            )
-
-
-            actual = (
-
-                test_data[
-                    target_cases
+                    target
                 ]
-
                 .to_numpy(
                     dtype=float
                 )
@@ -1028,85 +1341,95 @@ for setting, group in df.groupby(
 
 
             valid_prediction = (
-
                 np.isfinite(
-                    actual
+                    actual_eval
                 )
-
-                &
-
-                np.isfinite(
-                    predictions
+                & np.isfinite(
+                    prediction_eval
                 )
             )
 
 
-            actual_eval = (
+            if (
+                not valid_prediction.any()
+            ):
 
-                actual[
+                print(
+                    f"Skipping {setting}, "
+                    f"horizon={horizon}, "
+                    f"model={model_name}: "
+                    "no finite predictions."
+                )
+
+                continue
+
+
+            actual_eval = (
+                actual_eval[
                     valid_prediction
                 ]
             )
 
 
             prediction_eval = (
-
-                predictions[
+                prediction_eval[
                     valid_prediction
                 ]
             )
 
 
-            if len(
-                actual_eval
-            ) == 0:
+            evaluation_rows = (
+                test_data
+                .iloc[
+                    np.flatnonzero(
+                        valid_prediction
+                    )
+                ]
+                .copy()
+            )
 
-                continue
 
+            # ------------------------------------------------
+            # METRICS
+            # ------------------------------------------------
 
             model_mae = mae(
-
                 actual_eval,
-
                 prediction_eval
             )
 
 
             model_rmse = rmse(
-
                 actual_eval,
-
                 prediction_eval
             )
 
 
             if (
-
                 pd.notna(
                     scale
                 )
-
-                and
-
-                scale > 0
+                and scale > 0
             ):
 
                 model_mase = (
-
                     model_mae
-
                     / scale
                 )
 
             else:
 
-                model_mase = np.nan
+                model_mase = (
+                    np.nan
+                )
 
+
+            # ------------------------------------------------
+            # STORE SUMMARY RESULT
+            # ------------------------------------------------
 
             results.append(
-
                 {
-
                     "setting":
                         setting,
 
@@ -1134,7 +1457,7 @@ for setting, group in df.groupby(
 
                     "n_test":
                         len(
-                            actual_eval
+                            evaluation_rows
                         ),
 
                     "best_rounds":
@@ -1152,6 +1475,77 @@ for setting, group in df.groupby(
             )
 
 
+            # ------------------------------------------------
+            # STORE INDIVIDUAL PREDICTIONS
+            # ------------------------------------------------
+
+            prediction_detail = (
+                pd.DataFrame(
+                    {
+                        "setting":
+                            setting,
+
+                        "validation_year":
+                            validation_year,
+
+                        "test_year":
+                            test_year,
+
+                        "source_year":
+                            evaluation_rows[
+                                "source_year"
+                            ]
+                            .to_numpy(),
+
+                        "source_week":
+                            evaluation_rows[
+                                "source_week"
+                            ]
+                            .to_numpy(),
+
+                        "week_label":
+                            evaluation_rows[
+                                "week_label"
+                            ]
+                            .astype(str)
+                            .to_numpy(),
+
+                        "analysis_week":
+                            evaluation_rows[
+                                "analysis_week"
+                            ]
+                            .to_numpy(),
+
+                        "target_analysis_week":
+                            (
+                                evaluation_rows[
+                                    "analysis_week"
+                                ]
+                                .to_numpy()
+                                + horizon
+                            ),
+
+                        "horizon_weeks":
+                            horizon,
+
+                        "model":
+                            model_name,
+
+                        "actual":
+                            actual_eval,
+
+                        "predicted":
+                            prediction_eval,
+                    }
+                )
+            )
+
+
+            prediction_frames.append(
+                prediction_detail
+            )
+
+
 # ============================================================
 # FULL RESULTS
 # ============================================================
@@ -1164,63 +1558,109 @@ results_df = pd.DataFrame(
 if results_df.empty:
 
     raise RuntimeError(
-
         "No XGBoost models were "
         "successfully evaluated."
     )
 
 
-RESULTS_FILE = (
+results_df = (
+    results_df
+    .sort_values(
+        [
+            "setting",
+            "horizon_weeks",
+            "model",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
+)
 
-    OUTPUT_DIR
 
+results_file = (
+    TABLE_DIR
     / "xgboost_forecasting_results.csv"
 )
 
 
 results_df.to_csv(
+    results_file,
+    index=False
+)
 
-    RESULTS_FILE,
 
+# ============================================================
+# SAVE PREDICTION-LEVEL RESULTS
+# ============================================================
+
+if (
+    len(
+        prediction_frames
+    )
+    == 0
+):
+
+    raise RuntimeError(
+        "No XGBoost prediction-level "
+        "rows were generated."
+    )
+
+
+predictions_df = pd.concat(
+    prediction_frames,
+    ignore_index=True
+)
+
+
+predictions_df = (
+    predictions_df
+    .sort_values(
+        [
+            "setting",
+            "horizon_weeks",
+            "model",
+            "analysis_week",
+        ]
+    )
+    .reset_index(
+        drop=True
+    )
+)
+
+
+prediction_file = (
+    PREDICTION_DIR
+    / "xgboost_predictions.csv"
+)
+
+
+predictions_df.to_csv(
+    prediction_file,
     index=False
 )
 
 
 print(
-
-    "\nXGBOOST FORECASTING RESULTS"
-)
-
-
-print(
-
-    results_df.to_string(
-        index=False
-    )
+    "\nSaved prediction-level data:",
+    prediction_file
 )
 
 
 # ============================================================
-# SUMMARY ACROSS SETTINGS
+# MEDIAN PERFORMANCE ACROSS SETTINGS
 # ============================================================
 
 summary = (
-
     results_df
-
     .groupby(
-
         [
             "horizon_weeks",
-
             "model",
         ],
-
         as_index=False
     )
-
     .agg(
-
         median_mae=(
             "mae",
             "median"
@@ -1244,34 +1684,15 @@ summary = (
 )
 
 
-SUMMARY_FILE = (
-
-    OUTPUT_DIR
-
+summary_file = (
+    TABLE_DIR
     / "xgboost_forecasting_summary.csv"
 )
 
 
 summary.to_csv(
-
-    SUMMARY_FILE,
-
+    summary_file,
     index=False
-)
-
-
-print(
-
-    "\nMEDIAN XGBOOST PERFORMANCE "
-    "ACROSS SETTINGS"
-)
-
-
-print(
-
-    summary.to_string(
-        index=False
-    )
 )
 
 
@@ -1279,145 +1700,125 @@ print(
 # CLIMATE ABLATION
 # ============================================================
 
-epi = (
-
+ablation_source = (
     results_df[
-
-        results_df[
-            "model"
-        ]
-
-        == "xgboost_epidemiology"
-    ]
-
-    [
         [
             "setting",
-
             "horizon_weeks",
-
+            "model",
             "mase",
         ]
     ]
-
-    .rename(
-
-        columns={
-
-            "mase":
-                "mase_epidemiology"
-        }
-    )
+    .copy()
 )
 
 
-climate = (
-
-    results_df[
-
-        results_df[
-            "model"
-        ]
-
-        == "xgboost_climate"
-    ]
-
-    [
-        [
+ablation_wide = (
+    ablation_source
+    .pivot_table(
+        index=[
             "setting",
-
             "horizon_weeks",
+        ],
 
+        columns=
+            "model",
+
+        values=
             "mase",
-        ]
-    ]
 
-    .rename(
-
-        columns={
-
-            "mase":
-                "mase_climate"
-        }
+        aggfunc=
+            "first",
     )
+    .reset_index()
 )
 
 
-ablation = epi.merge(
-
-    climate,
-
-    on=[
-        "setting",
-
-        "horizon_weeks",
-    ],
-
-    how="inner"
-)
+needed_ablation_columns = {
+    "xgboost_epidemiology",
+    "xgboost_climate",
+}
 
 
-ablation[
+if (
+    needed_ablation_columns
+    .issubset(
+        ablation_wide.columns
+    )
+):
 
-    "delta_mase_climate_minus_epi"
+    ablation = (
+        ablation_wide[
+            [
+                "setting",
+                "horizon_weeks",
+                "xgboost_epidemiology",
+                "xgboost_climate",
+            ]
+        ]
+        .copy()
+    )
 
-] = (
+
+    ablation = (
+        ablation
+        .rename(
+            columns={
+                "xgboost_epidemiology":
+                    "mase_epidemiology",
+
+                "xgboost_climate":
+                    "mase_climate",
+            }
+        )
+    )
+
 
     ablation[
-        "mase_climate"
-    ]
-
-    -
-
-    ablation[
-        "mase_epidemiology"
-    ]
-)
-
-
-ablation[
-
-    "climate_improves"
-
-] = (
-
-    ablation[
-
         "delta_mase_climate_minus_epi"
+    ] = (
+        ablation[
+            "mase_climate"
+        ]
+        - ablation[
+            "mase_epidemiology"
+        ]
+    )
 
-    ]
 
-    < 0
-)
+    ablation[
+        "climate_improves"
+    ] = (
+        ablation[
+            "delta_mase_climate_minus_epi"
+        ]
+        < 0
+    )
 
 
-ABLATION_FILE = (
+else:
 
-    OUTPUT_DIR
+    ablation = pd.DataFrame(
+        columns=[
+            "setting",
+            "horizon_weeks",
+            "mase_epidemiology",
+            "mase_climate",
+            "delta_mase_climate_minus_epi",
+            "climate_improves",
+        ]
+    )
 
+
+ablation_file = (
+    TABLE_DIR
     / "xgboost_climate_ablation.csv"
 )
 
 
 ablation.to_csv(
-
-    ABLATION_FILE,
-
+    ablation_file,
     index=False
-)
-
-
-print(
-
-    "\nXGBOOST CLIMATE ABLATION"
-)
-
-
-print(
-
-    ablation.to_string(
-        index=False
-    )
 )
 
 
@@ -1425,96 +1826,146 @@ print(
 # CLIMATE ABLATION SUMMARY
 # ============================================================
 
-ablation_summary = (
+if not ablation.empty:
 
-    ablation
+    ablation_summary = (
+        ablation
+        .groupby(
+            "horizon_weeks",
+            as_index=False
+        )
+        .agg(
+            settings_evaluated=(
+                "setting",
+                "nunique"
+            ),
 
-    .groupby(
+            settings_climate_improves=(
+                "climate_improves",
+                "sum"
+            ),
 
-        "horizon_weeks",
-
-        as_index=False
+            median_delta_mase=(
+                "delta_mase_climate_minus_epi",
+                "median"
+            ),
+        )
     )
 
-    .agg(
 
-        settings_evaluated=(
-            "setting",
-            "nunique"
-        ),
+else:
 
-        settings_climate_improves=(
-            "climate_improves",
-            "sum"
-        ),
-
-        median_delta_mase=(
-            "delta_mase_climate_minus_epi",
-            "median"
-        ),
+    ablation_summary = (
+        pd.DataFrame(
+            columns=[
+                "horizon_weeks",
+                "settings_evaluated",
+                "settings_climate_improves",
+                "median_delta_mase",
+            ]
+        )
     )
-)
 
 
-ABLATION_SUMMARY_FILE = (
-
-    OUTPUT_DIR
-
+ablation_summary_file = (
+    TABLE_DIR
     / "xgboost_climate_ablation_summary.csv"
 )
 
 
 ablation_summary.to_csv(
-
-    ABLATION_SUMMARY_FILE,
-
+    ablation_summary_file,
     index=False
 )
 
 
-print(
+# ============================================================
+# PRINT RESULTS
+# ============================================================
 
+print(
+    "\nXGBOOST FORECASTING RESULTS"
+)
+
+
+print(
+    results_df.to_string(
+        index=False
+    )
+)
+
+
+print(
+    "\nMEDIAN PERFORMANCE ACROSS SETTINGS"
+)
+
+
+print(
+    summary.to_string(
+        index=False
+    )
+)
+
+
+print(
+    "\nXGBOOST CLIMATE ABLATION"
+)
+
+
+if ablation.empty:
+
+    print(
+        "No paired climate/epidemiology "
+        "XGBoost comparisons were available."
+    )
+
+
+else:
+
+    print(
+        ablation.to_string(
+            index=False
+        )
+    )
+
+
+print(
     "\nXGBOOST CLIMATE ABLATION SUMMARY"
 )
 
 
 print(
-
     ablation_summary.to_string(
         index=False
     )
 )
 
 
-# ============================================================
-# FINISH
-# ============================================================
-
 print(
-
     "\nXGBOOST FORECASTING COMPLETE"
 )
 
 
 print(
-
-    f"Saved: {RESULTS_FILE}"
+    f"Saved: {results_file}"
 )
 
 
 print(
-
-    f"Saved: {SUMMARY_FILE}"
+    f"Saved: {summary_file}"
 )
 
 
 print(
-
-    f"Saved: {ABLATION_FILE}"
+    f"Saved: {ablation_file}"
 )
 
 
 print(
+    f"Saved: {ablation_summary_file}"
+)
 
-    f"Saved: {ABLATION_SUMMARY_FILE}"
+
+print(
+    f"Saved: {prediction_file}"
 )
