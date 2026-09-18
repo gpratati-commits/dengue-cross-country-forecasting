@@ -28,7 +28,13 @@ dir.create(
   recursive = TRUE,
   showWarnings = FALSE
 )
+PREDICTION_DIR <- "outputs/predictions"
 
+dir.create(
+  PREDICTION_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
 
 # ============================================================
 # READ DATA
@@ -137,6 +143,8 @@ horizons <- c(
 )
 
 results <- list()
+prediction_rows <- list()
+prediction_index <- 1
 
 result_index <- 1
 
@@ -349,6 +357,47 @@ if (length(actual_eval) == 0) {
 
   next
 }
+prediction_detail <- test_complete[
+  valid_prediction,
+  c(
+    "source_year",
+    "source_week",
+    "analysis_week",
+    "week_label"
+  )
+]
+
+prediction_detail$setting <- setting_name
+prediction_detail$test_year <- test_year
+prediction_detail$horizon_weeks <- horizon
+prediction_detail$model <- model_name
+
+prediction_detail$target_analysis_week <- (
+  prediction_detail$analysis_week
+  + horizon
+)
+
+prediction_detail$actual <- actual_eval
+prediction_detail$predicted <- prediction_eval
+
+prediction_rows[[prediction_index]] <- prediction_detail[
+  ,
+  c(
+    "setting",
+    "test_year",
+    "source_year",
+    "source_week",
+    "week_label",
+    "analysis_week",
+    "target_analysis_week",
+    "horizon_weeks",
+    "model",
+    "actual",
+    "predicted"
+  )
+]
+
+prediction_index <- prediction_index + 1
 
 
 # ----------------------------------------------------------
@@ -384,38 +433,7 @@ if (
   model_mase <- NA_real_
 }
 
-      response <- "target_cases_h1"
-      test_complete[[response]]
-
-      model_mae <- mae(
-        actual,
-        predictions
-      )
-
-
-      model_rmse <- rmse(
-        actual,
-        predictions
-      )
-
-
-      if (
-        !is.na(scale)
-        &&
-        scale > 0
-      ) {
-
-        model_mase <- (
-          model_mae
-          /
-          scale
-        )
-
-      } else {
-
-        model_mase <- NA_real_
-      }
-
+      
 
       results[[result_index]] <- data.frame(
 
@@ -476,7 +494,37 @@ if (
   )
 }
 
+# ============================================================
+# SAVE PREDICTION-LEVEL RESULTS
+# ============================================================
 
+if (length(prediction_rows) == 0) {
+  stop(
+    "No prediction-level rows were generated."
+  )
+}
+
+predictions_df <- do.call(
+  rbind,
+  prediction_rows
+)
+
+PREDICTION_FILE <- file.path(
+  PREDICTION_DIR,
+  "negative_binomial_predictions.csv"
+)
+
+write.csv(
+  predictions_df,
+  PREDICTION_FILE,
+  row.names = FALSE
+)
+
+cat(
+  "\nSaved prediction-level data:",
+  PREDICTION_FILE,
+  "\n"
+)
 # ============================================================
 # SAVE DETAILED RESULTS
 # ============================================================
