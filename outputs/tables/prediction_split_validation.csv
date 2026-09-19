@@ -1,0 +1,4 @@
+family,rows,settings,models,horizons,missing_actual,missing_predicted,nonfinite_actual,nonfinite_predicted,duplicates,wrong_target_year,wrong_target_analysis_week,cross_year_forecasts,expected_models_present,expected_horizons_present,validation_passed
+baseline,3645,8,"moving_average_4, persistence, seasonal_naive","1, 2, 4",0,0,0,0,0,0,0,152,True,True,True
+negative_binomial,1770,7,"climate_informed, epidemiology_only","1, 2, 4",0,0,0,0,0,0,0,69,True,True,True
+xgboost,2342,8,"xgboost_climate, xgboost_epidemiology","1, 2, 4",0,0,0,0,0,0,0,96,True,True,True
